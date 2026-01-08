@@ -290,6 +290,22 @@ export function EditorApp() {
         </div>
       </header>
 
+      {/* 频率限制警告 */}
+      {rateLimitWarning && (
+        <div className="fixed top-24 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-2 duration-200">
+          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 shadow-lg flex items-center gap-2 max-w-md">
+            <span className="text-lg flex-shrink-0">⚠️</span>
+            <p className="text-sm text-yellow-800 flex-1">{rateLimitWarning}</p>
+            <button
+              onClick={() => setRateLimitWarning(null)}
+              className="text-yellow-600 hover:text-yellow-800 flex-shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 文章内容区 */}
       <main className="pt-28 pb-16">
         <article className="w-full max-w-4xl mx-auto bg-white shadow-sm px-12 py-10" style={{ minHeight: 'calc(100vh - 7rem)' }}>
