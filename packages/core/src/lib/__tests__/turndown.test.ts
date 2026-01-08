@@ -36,8 +36,8 @@ describe('htmlToMarkdown', () => {
       expect(markdown).toContain('| Data A |')
     })
 
-    it('should keep table without th as plain text (no headers = no conversion)', () => {
-      // 没有表头的表格无法转换为 Markdown，内容会被提取为纯文本
+    it('should convert table without th using first row as header (fallback)', () => {
+      // 没有表头的表格使用第一行作为表头（降级处理）
       const html = `
         <table>
           <tr>
@@ -51,13 +51,15 @@ describe('htmlToMarkdown', () => {
         </table>
       `
       const markdown = htmlToMarkdown(html)
-      // 没有表头的表格会被保持为 HTML 或提取为纯文本
-      // 在 regex 模式下，会保持为 HTML（不转换）
-      expect(markdown).toContain('Cell 1')
-      expect(markdown).toContain('Cell 2')
+      // 第一行作为表头，后续行作为数据
+      expect(markdown).toContain('| Cell 1 |')
+      expect(markdown).toContain('| Cell 2 |')
+      expect(markdown).toContain('| --- |')
+      expect(markdown).toContain('| Cell 3 |')
+      expect(markdown).toContain('| Cell 4 |')
     })
 
-    it('should handle table with alignment (basic conversion, alignment not preserved)', () => {
+    it('should preserve table alignment markers', () => {
       const html = `
         <table>
           <thead>
@@ -77,11 +79,28 @@ describe('htmlToMarkdown', () => {
         </table>
       `
       const markdown = htmlToMarkdown(html)
-      // regex converter produces basic table without alignment markers
       expect(markdown).toContain('| Left |')
       expect(markdown).toContain('| Center |')
       expect(markdown).toContain('| Right |')
-      expect(markdown).toContain('| --- |')
+      // 验证对齐标记
+      expect(markdown).toContain(':---')   // left
+      expect(markdown).toContain(':---:')  // center
+      expect(markdown).toContain('---:')   // right
+    })
+
+    it('should escape pipe characters in table cells', () => {
+      const html = `
+        <table>
+          <thead>
+            <tr><th>Command</th><th>Description</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>a | b</td><td>OR operation</td></tr>
+          </tbody>
+        </table>
+      `
+      const markdown = htmlToMarkdown(html)
+      expect(markdown).toContain('a \\| b')  // 管道符被转义
     })
 
     it('should convert table wrapped in figure element', () => {
@@ -144,10 +163,52 @@ describe('htmlToMarkdown', () => {
       expect(markdown).toContain('const x = 1;')
     })
 
-    it('should detect language from class', () => {
+    it('should detect language from language-xxx class', () => {
       const html = '<pre><code class="language-javascript">const x = 1;</code></pre>'
       const markdown = htmlToMarkdown(html)
       expect(markdown).toContain('```javascript')
+    })
+
+    it('should detect language from lang-xxx class', () => {
+      const html = '<pre><code class="lang-python">print("hello")</code></pre>'
+      const markdown = htmlToMarkdown(html)
+      expect(markdown).toContain('```python')
+    })
+
+    it('should detect language from hljs class', () => {
+      const html = '<pre><code class="hljs typescript">const x: number = 1;</code></pre>'
+      const markdown = htmlToMarkdown(html)
+      expect(markdown).toContain('```typescript')
+    })
+
+    it('should detect language from data-lang attribute', () => {
+      const html = '<pre data-lang="go"><code>func main() {}</code></pre>'
+      const markdown = htmlToMarkdown(html)
+      expect(markdown).toContain('```go')
+    })
+
+    it('should preserve multiline code', () => {
+      const html = '<pre><code>line1\nline2\nline3</code></pre>'
+      const markdown = htmlToMarkdown(html)
+      expect(markdown).toContain('line1')
+      expect(markdown).toContain('line2')
+      expect(markdown).toContain('line3')
+    })
+  })
+
+  describe('LaTeX formulas', () => {
+    it('should convert block formula script tag', () => {
+      const html = '<script type="math/tex; mode=display">E = mc^2</script>'
+      const markdown = htmlToMarkdown(html)
+      expect(markdown).toContain('$$')
+      expect(markdown).toContain('E = mc^2')
+    })
+
+    it('should convert inline formula script tag', () => {
+      const html = '<script type="math/tex">x^2 + y^2 = z^2</script>'
+      const markdown = htmlToMarkdown(html)
+      expect(markdown).toContain('$')
+      expect(markdown).toContain('x^2 + y^2 = z^2')
     })
   })
 

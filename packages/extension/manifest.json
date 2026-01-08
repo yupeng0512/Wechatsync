@@ -52,8 +52,6 @@
     {
       "matches": ["http://*/*", "https://*/*"],
       "js": [
-        "src/lib/reader/reader.js",
-        "src/lib/reader/Readability.js",
         "src/content/extractor.ts"
       ],
       "run_at": "document_end"

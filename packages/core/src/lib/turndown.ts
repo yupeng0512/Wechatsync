@@ -251,8 +251,31 @@ export function htmlToMarkdown(html: string, _options: TurndownOptions = {}): st
 }
 
 /**
+ * 从 className 提取编程语言
+ */
+function extractLangFromClass(className: string): string {
+  if (!className) return ''
+
+  const patterns = [
+    /language-(\w+)/i,           // language-javascript
+    /lang-(\w+)/i,               // lang-js
+    /\bhljs\s+(\w+)/i,           // hljs javascript
+    /\b(javascript|typescript|python|java|cpp|c|csharp|go|rust|ruby|php|swift|kotlin|scala|sql|html|css|json|xml|yaml|markdown|bash|shell|powershell)\b/i,
+  ]
+
+  for (const pattern of patterns) {
+    const match = className.match(pattern)
+    if (match) {
+      return match[1].toLowerCase()
+    }
+  }
+
+  return ''
+}
+
+/**
  * 简单的正则 HTML → Markdown 转换 (回退方案)
- * 增强版：支持表格转换
+ * 增强版：支持表格转换、代码块语言识别、LaTeX 公式
  */
 function htmlToMarkdownSimple(html: string): string {
   let md = html
@@ -279,10 +302,45 @@ function htmlToMarkdownSimple(html: string): string {
   md = md.replace(/<img[^>]*src="([^"]*)"[^>]*alt="([^"]*)"[^>]*\/?>/gi, '![$2]($1)')
   md = md.replace(/<img[^>]*src="([^"]*)"[^>]*\/?>/gi, '![]($1)')
 
-  // 代码块
-  md = md.replace(/<pre[^>]*><code[^>]*class="language-(\w+)"[^>]*>([\s\S]*?)<\/code><\/pre>/gi, '\n```$1\n$2\n```\n')
-  md = md.replace(/<pre[^>]*><code[^>]*>([\s\S]*?)<\/code><\/pre>/gi, '\n```\n$1\n```\n')
-  md = md.replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, '\n```\n$1\n```\n')
+  // 代码块 - 增强语言检测
+  md = md.replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (match, content) => {
+    let language = ''
+
+    // 从 pre 标签提取语言
+    const preLangMatch = match.match(/<pre[^>]*data-lang(?:uage)?=["'](\w+)["']/)
+    const preClassMatch = match.match(/<pre[^>]*class="([^"]*)"/)
+    if (preLangMatch) {
+      language = preLangMatch[1]
+    } else if (preClassMatch) {
+      language = extractLangFromClass(preClassMatch[1])
+    }
+
+    // 从 code 标签提取语言
+    const codeLangMatch = content.match(/<code[^>]*data-lang(?:uage)?=["'](\w+)["']/)
+    const codeClassMatch = content.match(/<code[^>]*class="([^"]*)"/)
+    if (!language) {
+      if (codeLangMatch) {
+        language = codeLangMatch[1]
+      } else if (codeClassMatch) {
+        language = extractLangFromClass(codeClassMatch[1])
+      }
+    }
+
+    // 提取纯文本内容
+    let text = content
+      .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, '$1')
+      .replace(/<[^>]+>/g, '')
+
+    // 解码 HTML 实体
+    text = text
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
+      .replace(/&quot;/g, '"')
+      .replace(/&#039;/g, "'")
+
+    return '\n```' + language + '\n' + text.trim() + '\n```\n'
+  })
 
   // 行内代码
   md = md.replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, '`$1`')
@@ -301,6 +359,12 @@ function htmlToMarkdownSimple(html: string): string {
   md = md.replace(/<blockquote[^>]*>([\s\S]*?)<\/blockquote>/gi, (_, content) => {
     return '\n' + content.trim().split('\n').map((line: string) => '> ' + line).join('\n') + '\n'
   })
+
+  // LaTeX 公式 - 块级 (mode=display)
+  // 注意：$$ 在替换字符串中需要写成 $$$$ 才能输出 $$
+  md = md.replace(/<script[^>]*type=["']math\/tex[^"']*display[^"']*["'][^>]*>([\s\S]*?)<\/script>/gi, '\n$$$$\n$1\n$$$$\n')
+  // LaTeX 公式 - 行内
+  md = md.replace(/<script[^>]*type=["']math\/tex["'][^>]*>([\s\S]*?)<\/script>/gi, ' $$$$$1$$$$ ')
 
   // 移除其他标签
   md = md.replace(/<\/?[^>]+(>|$)/g, '')
@@ -352,6 +416,7 @@ function convertTables(html: string): string {
     // 检查是否有表头（thead 或 第一行全是 th）
     const hasTheadMatch = tableContent.match(/<thead[^>]*>([\s\S]*?)<\/thead>/i)
     const rows: string[][] = []
+    const alignments: string[][] = [] // 存储每行每个单元格的对齐方式
     let headerRowIndex = -1
 
     // 提取所有行
@@ -360,26 +425,45 @@ function convertTables(html: string): string {
     for (let i = 0; i < rowMatches.length; i++) {
       const rowContent = rowMatches[i]
       const cells: string[] = []
+      const rowAligns: string[] = []
 
       // 检查单元格类型（th 或 td）
       const cellMatches = rowContent.match(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi) || []
       const isHeaderRow = cellMatches.length > 0 && cellMatches.every((c: string) => c.startsWith('<th'))
 
       for (const cellMatch of cellMatches) {
-        // 提取单元格内容
-        const contentMatch = cellMatch.match(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/i)
-        if (contentMatch) {
-          // 清理内容：移除内部 HTML 标签但保留文本
-          let content = contentMatch[1]
-            .replace(/<[^>]+>/g, '') // 移除标签
-            .replace(/\s+/g, ' ')    // 合并空白
+        // 提取单元格内容和对齐属性
+        const fullMatch = cellMatch.match(/<t[hd]([^>]*)>([\s\S]*?)<\/t[hd]>/i)
+        if (fullMatch) {
+          const attrs = fullMatch[1]
+          const rawContent = fullMatch[2]
+
+          // 提取对齐方式
+          const alignMatch = attrs.match(/align=["']?(left|center|right)["']?/i) ||
+                            attrs.match(/style=["'][^"']*text-align:\s*(left|center|right)/i)
+          const align = alignMatch ? alignMatch[1].toLowerCase() : ''
+          rowAligns.push(align)
+
+          // 清理内容
+          let content = rawContent
+            .replace(/<br\s*\/?>/gi, ' ')
+            .replace(/<[^>]+>/g, '')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/\s+/g, ' ')
             .trim()
+
+          // 转义管道符
+          content = content.replace(/\|/g, '\\|')
           cells.push(content)
         }
       }
 
       if (cells.length > 0) {
         rows.push(cells)
+        alignments.push(rowAligns)
         // 记录表头行（在 thead 中或是第一行全 th）
         if (hasTheadMatch && rowContent.indexOf('<th') !== -1) {
           headerRowIndex = i
@@ -389,14 +473,22 @@ function convertTables(html: string): string {
       }
     }
 
-    // 如果没有找到表头行，保留原始 HTML（不转换）
-    if (headerRowIndex === -1 || rows.length === 0) {
-      return `<table>${tableContent}</table>`
+    // 如果没有行，返回空
+    if (rows.length === 0) {
+      return ''
+    }
+
+    // 如果没有找到表头行，将第一行作为表头（降级处理）
+    if (headerRowIndex === -1) {
+      headerRowIndex = 0
     }
 
     // 转换为 Markdown
     const mdRows: string[] = []
     const colCount = Math.max(...rows.map(r => r.length))
+
+    // 获取表头行的对齐信息
+    const headerAligns = alignments[headerRowIndex] || []
 
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i]
@@ -407,9 +499,22 @@ function convertTables(html: string): string {
 
       mdRows.push('| ' + row.join(' | ') + ' |')
 
-      // 在表头行之后添加分隔行
+      // 在表头行之后添加分隔行（带对齐信息）
       if (i === headerRowIndex) {
-        mdRows.push('| ' + row.map(() => '---').join(' | ') + ' |')
+        const separators = []
+        for (let j = 0; j < colCount; j++) {
+          const align = headerAligns[j] || ''
+          if (align === 'left') {
+            separators.push(':---')
+          } else if (align === 'center') {
+            separators.push(':---:')
+          } else if (align === 'right') {
+            separators.push('---:')
+          } else {
+            separators.push('---')
+          }
+        }
+        mdRows.push('| ' + separators.join(' | ') + ' |')
       }
     }
 
