@@ -14,6 +14,18 @@ interface SohuAccountInfo {
   avatar: string
 }
 
+/**
+ * 生成设备 ID (dv-id)
+ */
+function generateDeviceId(): string {
+  const chars = '0123456789abcdef'
+  let result = ''
+  for (let i = 0; i < 32; i++) {
+    result += chars[Math.floor(Math.random() * chars.length)]
+  }
+  return result
+}
+
 export class SohuAdapter extends CodeAdapter {
   readonly meta: PlatformMeta = {
     id: 'sohu',
@@ -24,6 +36,8 @@ export class SohuAdapter extends CodeAdapter {
   }
 
   private accountInfo: SohuAccountInfo | null = null
+  private deviceId: string = generateDeviceId()
+  private spCm: string = ''
 
   async checkAuth(): Promise<AuthResult> {
     try {
@@ -50,6 +64,9 @@ export class SohuAdapter extends CodeAdapter {
 
       this.accountInfo = res.data.account
 
+      // 获取 mp-cv cookie 用于 sp-cm header
+      await this.fetchSpCm()
+
       return {
         isAuthenticated: true,
         userId: String(this.accountInfo.id),
@@ -59,6 +76,27 @@ export class SohuAdapter extends CodeAdapter {
     } catch (error) {
       logger.error(' checkAuth error:', error)
       return { isAuthenticated: false, error: (error as Error).message }
+    }
+  }
+
+  /**
+   * 获取 sp-cm 值 (从 mp-cv cookie)
+   */
+  private async fetchSpCm(): Promise<void> {
+    try {
+      const cookies = await chrome.cookies.getAll({ domain: '.sohu.com', name: 'mp-cv' })
+      if (cookies.length > 0) {
+        this.spCm = cookies[0].value
+        logger.debug('Got sp-cm from cookie:', this.spCm)
+      } else {
+        // 如果没有 cookie，生成一个
+        this.spCm = `100-${Date.now()}-${generateDeviceId()}`
+        logger.debug('Generated sp-cm:', this.spCm)
+      }
+    } catch (error) {
+      // fallback: 生成一个
+      this.spCm = `100-${Date.now()}-${generateDeviceId()}`
+      logger.debug('Fallback sp-cm:', this.spCm)
     }
   }
 
@@ -94,34 +132,44 @@ export class SohuAdapter extends CodeAdapter {
         }
       )
 
-      // 4. 保存草稿
-      const postData = new URLSearchParams({
+      // 4. 保存草稿 (v2 API - JSON 格式)
+      const postData = {
         title: article.title,
         brief: '',
         content: content,
-        channelId: '39',
-        categoryId: '-1',
-        id: '0',
-        userColumnId: '0',
-        businessCode: '0',
-        isOriginal: 'false',
+        channelId: 24,
+        categoryId: -1,
+        id: 0,
+        userColumnId: 0,
+        columnNewsIds: [],
+        businessCode: 0,
+        declareOriginal: false,
         cover: '',
-        attrIds: '',
-        topicIds: '',
-        isAd: '0',
-        reprint: 'false',
-        accountId: this.accountInfo!.id,
-      })
+        topicIds: [],
+        isAd: 0,
+        userLabels: '[]',
+        reprint: false,
+        customTags: '',
+        infoResource: 0,
+        sourceUrl: '',
+        visibleToLoginedUsers: 0,
+        attrIds: [],
+        auto: true,
+        accountId: Number(this.accountInfo!.id),
+      }
 
       const response = await this.runtime.fetch(
-        `https://mp.sohu.com/mpbp/bp/news/v4/news/draft?accountId=${this.accountInfo!.id}`,
+        `https://mp.sohu.com/mpbp/bp/news/v4/news/draft/v2?accountId=${this.accountInfo!.id}`,
         {
           method: 'POST',
           credentials: 'include',
           headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+            'dv-id': this.deviceId,
+            'sp-cm': this.spCm,
           },
-          body: postData,
+          body: JSON.stringify(postData),
         }
       )
 
@@ -138,7 +186,7 @@ export class SohuAdapter extends CodeAdapter {
       }
 
       const postId = res.data
-      const draftUrl = `https://mp.sohu.com/mpfe/v3/main/news/addarticle?spm=smmp.articlelist.0.0&contentStatus=2&id=${postId}`
+      const draftUrl = `https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle?spm=smmp.articlelist.0.0&contentStatus=2&id=${postId}`
 
       return this.createResult(true, {
         postId: String(postId),
@@ -173,7 +221,7 @@ export class SohuAdapter extends CodeAdapter {
     formData.append('accountId', this.accountInfo.id)
 
     const uploadResponse = await this.runtime.fetch(
-      'https://mp.sohu.com/commons/front/outerUpload/image/file',
+      'https://mp.sohu.com/commons/front/outerUpload/image/file?accountId='+  this.accountInfo.id,
       {
         method: 'POST',
         credentials: 'include',
@@ -183,12 +231,12 @@ export class SohuAdapter extends CodeAdapter {
 
     const res = await uploadResponse.json() as {
       url?: string
+      msg?: string
     }
 
     logger.debug(' Image upload response:', res)
-
     if (!res.url) {
-      throw new Error('图片上传失败')
+      throw new Error('图片上传失败:'+ (res.msg))
     }
 
     return {

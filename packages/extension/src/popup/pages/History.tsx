@@ -92,8 +92,9 @@ export function HistoryPage() {
 
       <div className="flex-1 overflow-auto space-y-3">
         {history.map((item) => {
-          const successCount = item.results.filter(r => r.success).length
-          const failedCount = item.results.filter(r => !r.success).length
+          const results = item.results || []
+          const successCount = results.filter(r => r.success).length
+          const failedCount = results.filter(r => !r.success).length
 
           return (
             <div
@@ -142,7 +143,7 @@ export function HistoryPage() {
 
                   {/* 平台列表 */}
                   <div className="mt-1.5 flex flex-wrap gap-1">
-                    {item.results.map((result) => (
+                    {results.map((result) => (
                       <div
                         key={result.platform}
                         className={`

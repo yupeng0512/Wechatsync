@@ -47,6 +47,7 @@ export function EditorApp() {
   const [status, setStatus] = useState<SyncStatus>('idle')
   const [results, setResults] = useState<SyncResult[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [rateLimitWarning, setRateLimitWarning] = useState<string | null>(null)
 
   const titleRef = useRef<HTMLHeadingElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -81,6 +82,12 @@ export function EditorApp() {
           setResults(prev => [...prev, data.result])
         } else if (data.type === 'SYNC_COMPLETE') {
           setStatus('completed')
+          // 显示频率限制警告（如果有）
+          if (data.rateLimitWarning) {
+            setRateLimitWarning(data.rateLimitWarning)
+            // 8秒后自动关闭
+            setTimeout(() => setRateLimitWarning(null), 8000)
+          }
         } else if (data.type === 'SYNC_ERROR') {
           setError(data.error)
           setStatus('idle')

@@ -106,6 +106,9 @@ interface SyncState {
   // 是否已恢复状态
   recovered: boolean
 
+  // 频率限制警告
+  rateLimitWarning: string | null
+
   // Actions
   loadPlatforms: () => Promise<void>
   loadArticle: () => Promise<void>
@@ -122,6 +125,7 @@ interface SyncState {
   updateImageProgress: (progress: ImageProgress | null) => void
   clearSyncState: () => Promise<void>
   updateArticle: (updates: Partial<Article>) => void
+  clearRateLimitWarning: () => void
 }
 
 // 最大历史记录数
@@ -150,20 +154,6 @@ async function loadSelectedPlatforms(): Promise<string[] | null> {
   }
 }
 
-// CMS 图标
-function getCMSIcon(type: string): string {
-  switch (type) {
-    case 'wordpress':
-      return 'https://s.w.org/style/images/about/WordPress-logotype-simplified.png'
-    case 'typecho':
-      return '/assets/typecho.ico'
-    case 'metaweblog':
-      return 'https://www.cnblogs.com/favicon.ico'
-    default:
-      return '/assets/icon-48.png'
-  }
-}
-
 export const useSyncStore = create<SyncState>((set, get) => ({
   status: 'loading',
   article: null,
@@ -174,6 +164,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
   imageProgress: null,
   history: [],
   recovered: false,
+  rateLimitWarning: null,
 
   recoverSyncState: async () => {
     // 避免重复恢复
@@ -237,44 +228,16 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     }
 
     try {
-      // 并行加载 DSL 平台和 CMS 账户
-      const [platformResponse, cmsStorage] = await Promise.all([
-        chrome.runtime.sendMessage({ type: 'CHECK_ALL_AUTH' }),
-        chrome.storage.local.get('cmsAccounts'),
-      ])
+      // CHECK_ALL_AUTH 现在返回 DSL 和 CMS 合并的列表
+      const platformResponse = await chrome.runtime.sendMessage({ type: 'CHECK_ALL_AUTH' })
 
-      const allPlatforms: Platform[] = []
-
-      // 添加已登录的 DSL 平台
-      if (platformResponse.platforms) {
-        const dslPlatforms = platformResponse.platforms
-          .filter((p: any) => p.isAuthenticated)
-          .map((p: any) => ({
-            ...p,
-            sourceType: 'dsl' as const,
-          }))
-        allPlatforms.push(...dslPlatforms)
-      }
-
-      // 添加已连接的 CMS 账户
-      const cmsAccounts = cmsStorage.cmsAccounts || []
-      const cmsPlatforms = cmsAccounts
-        .filter((a: any) => a.isConnected)
-        .map((a: any) => ({
-          id: a.id,
-          name: a.name,
-          icon: getCMSIcon(a.type),
-          homepage: a.url,
-          isAuthenticated: true,
-          username: a.username,
-          sourceType: 'cms' as const,
-          cmsType: a.type,
-        }))
-      allPlatforms.push(...cmsPlatforms)
+      // 只保留已认证的平台
+      const allPlatforms: Platform[] = (platformResponse.platforms || [])
+        .filter((p: any) => p.isAuthenticated)
 
       // 加载保存的平台选择
       const savedSelections = await loadSelectedPlatforms()
-      const authenticatedIds = allPlatforms.filter(p => p.isAuthenticated).map(p => p.id)
+      const authenticatedIds = allPlatforms.map(p => p.id)
 
       // 过滤出仍然有效的已选平台（已登录的平台）
       let selectedPlatforms: string[] = []
@@ -406,56 +369,19 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     set({ status: 'syncing', results: [], error: null, imageProgress: null })
 
     try {
-      // 分离 DSL 平台和 CMS 账户
-      const dslPlatformIds = selectedPlatforms.filter(id => {
-        const p = platforms.find(p => p.id === id)
-        return p?.sourceType === 'dsl'
-      })
-      const cmsPlatformIds = selectedPlatforms.filter(id => {
-        const p = platforms.find(p => p.id === id)
-        return p?.sourceType === 'cms'
+      // SYNC_ARTICLE 现在同时处理 DSL 和 CMS 平台
+      const response = await chrome.runtime.sendMessage({
+        type: 'SYNC_ARTICLE',
+        payload: { article, platforms: selectedPlatforms },
       })
 
-      const allResults: SyncResult[] = []
+      const allResults: SyncResult[] = response.results || []
+      const rateLimitWarning: string | null = response.rateLimitWarning || null
 
-      // 同步到 DSL 平台（由 background 保存历史记录）
-      if (dslPlatformIds.length > 0) {
-        const response = await chrome.runtime.sendMessage({
-          type: 'SYNC_ARTICLE',
-          payload: { article, platforms: dslPlatformIds },
-        })
-        if (response.results) {
-          allResults.push(...response.results)
-        }
-      }
-
-      // 同步到 CMS 账户（顺序执行）
-      for (const accountId of cmsPlatformIds) {
-        try {
-          const response = await chrome.runtime.sendMessage({
-            type: 'SYNC_TO_CMS',
-            payload: { accountId, article },
-          })
-          allResults.push({
-            platform: accountId,
-            success: response.success,
-            postUrl: response.postUrl,
-            draftOnly: response.draftOnly,
-            error: response.error,
-          })
-        } catch (error) {
-          allResults.push({
-            platform: accountId,
-            success: false,
-            error: (error as Error).message,
-          })
-        }
-      }
-
-      // 为结果添加平台名称
+      // 为结果添加平台名称（如果 background 没有添加）
       const resultsWithNames = allResults.map((r: SyncResult) => ({
         ...r,
-        platformName: platforms.find(p => p.id === r.platform)?.name || r.platform,
+        platformName: r.platformName || platforms.find(p => p.id === r.platform)?.name || r.platform,
       }))
 
       // 历史记录由 background 保存，这里只刷新显示
@@ -467,6 +393,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         results: resultsWithNames,
         history: newHistory,
         imageProgress: null,
+        rateLimitWarning,
       })
 
       // 记录同步（用于频率限制检查）
@@ -522,56 +449,18 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     set({ status: 'syncing', results: successResults, error: null, imageProgress: null })
 
     try {
-      // 分离 DSL 平台和 CMS 账户
-      const dslPlatformIds = failedPlatformIds.filter(id => {
-        const p = platforms.find(p => p.id === id)
-        return p?.sourceType === 'dsl'
-      })
-      const cmsPlatformIds = failedPlatformIds.filter(id => {
-        const p = platforms.find(p => p.id === id)
-        return p?.sourceType === 'cms'
+      // SYNC_ARTICLE 现在同时处理 DSL 和 CMS 平台
+      const response = await chrome.runtime.sendMessage({
+        type: 'SYNC_ARTICLE',
+        payload: { article, platforms: failedPlatformIds, skipHistory: true },
       })
 
-      const retryResults: SyncResult[] = []
+      const retryResults: SyncResult[] = response.results || []
 
-      // 重试 DSL 平台（skipHistory=true，由 popup 更新现有历史条目）
-      if (dslPlatformIds.length > 0) {
-        const response = await chrome.runtime.sendMessage({
-          type: 'SYNC_ARTICLE',
-          payload: { article, platforms: dslPlatformIds, skipHistory: true },
-        })
-        if (response.results) {
-          retryResults.push(...response.results)
-        }
-      }
-
-      // 重试 CMS 账户
-      for (const accountId of cmsPlatformIds) {
-        try {
-          const response = await chrome.runtime.sendMessage({
-            type: 'SYNC_TO_CMS',
-            payload: { accountId, article },
-          })
-          retryResults.push({
-            platform: accountId,
-            success: response.success,
-            postUrl: response.postUrl,
-            draftOnly: response.draftOnly,
-            error: response.error,
-          })
-        } catch (error) {
-          retryResults.push({
-            platform: accountId,
-            success: false,
-            error: (error as Error).message,
-          })
-        }
-      }
-
-      // 为结果添加平台名称
+      // 为结果添加平台名称（如果 background 没有添加）
       const retryResultsWithNames = retryResults.map((r: SyncResult) => ({
         ...r,
-        platformName: platforms.find(p => p.id === r.platform)?.name || r.platform,
+        platformName: r.platformName || platforms.find(p => p.id === r.platform)?.name || r.platform,
       }))
 
       const allResults = [...successResults, ...retryResultsWithNames]
@@ -632,6 +521,11 @@ export const useSyncStore = create<SyncState>((set, get) => ({
   // 追踪立即重试（隐式反馈）
   onImmediateRetry: () => {
     trackImplicitFeedback('immediate_retry').catch(() => {})
+  },
+
+  // 清除频率限制警告
+  clearRateLimitWarning: () => {
+    set({ rateLimitWarning: null })
   },
 }))
 

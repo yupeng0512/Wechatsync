@@ -46,6 +46,63 @@ function isEditorPage(): boolean {
          (url.includes('action=edit') || url.includes('appmsg_edit'))
 }
 
+// 显示频率限制警告
+function showRateLimitWarning(message: string) {
+  // 移除已存在的警告
+  const existing = document.querySelector('#wechatsync-rate-warning')
+  if (existing) existing.remove()
+
+  const warning = document.createElement('div')
+  warning.id = 'wechatsync-rate-warning'
+  warning.innerHTML = `
+    <style>
+      #wechatsync-rate-warning {
+        position: fixed;
+        top: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 2147483647;
+        background: #fef3cd;
+        border: 1px solid #ffc107;
+        border-radius: 8px;
+        padding: 12px 16px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-size: 14px;
+        color: #856404;
+        max-width: 400px;
+        animation: slideDown 0.3s ease;
+      }
+      @keyframes slideDown {
+        from { opacity: 0; transform: translateX(-50%) translateY(-20px); }
+        to { opacity: 1; transform: translateX(-50%) translateY(0); }
+      }
+      #wechatsync-rate-warning .close-btn {
+        background: none;
+        border: none;
+        cursor: pointer;
+        padding: 4px;
+        color: #856404;
+        font-size: 18px;
+        line-height: 1;
+      }
+      #wechatsync-rate-warning .close-btn:hover {
+        color: #533f03;
+      }
+    </style>
+    <span>⚠️</span>
+    <span style="flex: 1;">${message}</span>
+    <button class="close-btn" onclick="this.parentElement.remove()">×</button>
+  `
+  document.body.appendChild(warning)
+
+  // 8秒后自动关闭
+  setTimeout(() => warning.remove(), 8000)
+}
+
 // 注入同步面板
 async function injectSyncPanel() {
   if (document.querySelector('#wechatsync-editor-panel')) return
@@ -433,46 +490,13 @@ function bindEvents() {
   })
 }
 
-// CMS 图标
-function getCmsIcon(type: string): string {
-  switch (type) {
-    case 'wordpress':
-      return 'https://s.w.org/style/images/about/WordPress-logotype-simplified.png'
-    case 'typecho':
-      return chrome.runtime.getURL('assets/typecho.ico')
-    case 'metaweblog':
-      return 'https://www.cnblogs.com/favicon.ico'
-    default:
-      return chrome.runtime.getURL('assets/icon-48.png')
-  }
-}
-
 async function loadPlatforms() {
   renderView('loading')
 
   try {
-    // 获取 DSL 平台
+    // CHECK_ALL_AUTH 现在返回 DSL 和 CMS 合并的列表
     const response = await chrome.runtime.sendMessage({ type: 'CHECK_ALL_AUTH' })
-    const dslPlatforms = (response.platforms || []).filter((p: Platform) => p.isAuthenticated)
-
-    // 获取 CMS 账户
-    const cmsStorage = await chrome.storage.local.get('cmsAccounts')
-    const cmsAccounts = cmsStorage.cmsAccounts || []
-    const cmsPlatforms = cmsAccounts
-      .filter((a: any) => a.isConnected)
-      .map((a: any) => ({
-        id: a.id,
-        name: a.name,
-        icon: getCmsIcon(a.type),
-        homepage: a.url,
-        isAuthenticated: true,
-        username: a.username,
-        sourceType: 'cms' as const,
-        cmsType: a.type,
-      }))
-
-    // 合并所有平台
-    state.platforms = [...dslPlatforms, ...cmsPlatforms]
+    state.platforms = (response.platforms || []).filter((p: Platform) => p.isAuthenticated)
 
     const storage = await chrome.storage.local.get('lastSelectedPlatforms')
     state.selectedPlatforms = storage.lastSelectedPlatforms || []
@@ -650,55 +674,19 @@ async function startSync() {
   renderView('syncing')
 
   try {
-    // 分离 DSL 平台和 CMS 账户
-    const dslPlatformIds = state.selectedPlatforms.filter(id => {
-      const p = state.platforms.find(p => p.id === id)
-      return !p || (p as any).sourceType !== 'cms'
-    })
-    const cmsPlatformIds = state.selectedPlatforms.filter(id => {
-      const p = state.platforms.find(p => p.id === id)
-      return p && (p as any).sourceType === 'cms'
+    // SYNC_ARTICLE 现在同时处理 DSL 和 CMS 平台
+    const response = await chrome.runtime.sendMessage({
+      type: 'SYNC_ARTICLE',
+      payload: { article, platforms: state.selectedPlatforms, source: 'weixin-editor' },
     })
 
-    const allResults: any[] = []
+    state.results = response.results || []
 
-    // 同步到 DSL 平台
-    if (dslPlatformIds.length > 0) {
-      const response = await chrome.runtime.sendMessage({
-        type: 'SYNC_ARTICLE',
-        payload: { article, platforms: dslPlatformIds, source: 'weixin-editor' },
-      })
-      if (response.results) {
-        allResults.push(...response.results)
-      }
+    // 显示频率限制警告（如果有）
+    if (response.rateLimitWarning) {
+      showRateLimitWarning(response.rateLimitWarning)
     }
 
-    // 同步到 CMS 账户
-    for (const accountId of cmsPlatformIds) {
-      try {
-        const response = await chrome.runtime.sendMessage({
-          type: 'SYNC_TO_CMS',
-          payload: { accountId, article },
-        })
-        const platform = state.platforms.find(p => p.id === accountId)
-        allResults.push({
-          platform: accountId,
-          platformName: platform?.name,
-          success: response.success,
-          postUrl: response.postUrl,
-          draftOnly: response.draftOnly,
-          error: response.error,
-        })
-      } catch (error) {
-        allResults.push({
-          platform: accountId,
-          success: false,
-          error: (error as Error).message,
-        })
-      }
-    }
-
-    state.results = allResults
     renderView('results')
   } catch (error) {
     alert('同步失败：' + (error as Error).message)

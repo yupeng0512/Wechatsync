@@ -37,6 +37,7 @@ import { SohuAdapter } from './sohu'
 import { XueqiuAdapter } from './xueqiu'
 import { WeixinAdapter } from './weixin'
 import { WoshipmAdapter } from './woshipm'
+import { DaYuAdapter } from './dayu'
 
 // 所有适配器类列表
 const ADAPTER_CLASSES = [
@@ -54,6 +55,7 @@ const ADAPTER_CLASSES = [
   XueqiuAdapter,
   WeixinAdapter,
   WoshipmAdapter,
+  DaYuAdapter,
 ] as const
 
 // 适配器注册条目 (类型安全)

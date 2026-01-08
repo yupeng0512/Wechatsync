@@ -426,6 +426,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     // 同步完成
     editorIframe?.contentWindow?.postMessage(JSON.stringify({
       type: 'SYNC_COMPLETE',
+      rateLimitWarning: message.rateLimitWarning,
     }), '*')
   } else if (message.type === 'SYNC_ERROR') {
     // 同步错误

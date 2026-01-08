@@ -25,6 +25,7 @@ import {
   trackMilestone,
   trackGrowthMetrics,
 } from '../lib/analytics'
+import { checkSyncFrequency } from '../lib/rate-limit'
 
 const logger = createLogger('Background')
 
@@ -117,7 +118,7 @@ type MessageAction =
   | { type: 'GET_PLATFORMS' }
   | { type: 'CHECK_ALL_AUTH'; payload?: { forceRefresh?: boolean } }
   | { type: 'CHECK_AUTH'; payload: { platformId: string } }
-  | { type: 'SYNC_ARTICLE'; payload: { article: any; platforms: string[]; skipHistory?: boolean; source?: string } }
+  | { type: 'SYNC_ARTICLE'; payload: { article: any; platforms: string[]; allSelectedPlatforms?: string[]; skipHistory?: boolean; source?: string } }
   | { type: 'OPEN_SYNC_PAGE'; path?: string }
   | { type: 'TEST_CMS_CONNECTION'; payload: { type: CMSType; url: string; username: string; password: string } }
   | { type: 'SYNC_TO_CMS'; payload: { accountId: string; article: any } }
@@ -127,6 +128,7 @@ type MessageAction =
   | { type: 'TRACK_ARTICLE_EXTRACT'; payload: { source: string; success: boolean; hasTitle?: boolean; hasContent?: boolean; hasCover?: boolean; contentLength?: number } }
   | { type: 'GET_SYNC_STATE' }
   | { type: 'CLEAR_SYNC_STATE' }
+  | { type: 'UPDATE_SYNC_STATUS'; payload: { status: 'syncing' | 'completed' } }
   | { type: 'CANCEL_SYNC' }
   | { type: 'START_SYNC_FROM_EDITOR'; article: any; platforms: string[] }
 
@@ -151,8 +153,31 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
 
     case 'CHECK_ALL_AUTH': {
       const forceRefresh = message.payload?.forceRefresh ?? false
-      const platforms = await checkAllPlatformsAuth(forceRefresh)
-      return { platforms }
+      const dslPlatforms = await checkAllPlatformsAuth(forceRefresh)
+
+      // 为 DSL 平台添加 sourceType
+      const dslWithType = dslPlatforms.map((p: any) => ({
+        ...p,
+        sourceType: 'dsl' as const,
+      }))
+
+      // 同时加载 CMS 账户
+      const cmsStorage = await chrome.storage.local.get('cmsAccounts')
+      const cmsAccounts = cmsStorage.cmsAccounts || []
+      const cmsPlatforms = cmsAccounts
+        .filter((a: any) => a.isConnected)
+        .map((a: any) => ({
+          id: a.id,
+          name: a.name,
+          icon: getCmsIcon(a.type),
+          homepage: a.url,
+          isAuthenticated: true,
+          username: a.username,
+          sourceType: 'cms' as const,
+          cmsType: a.type,
+        }))
+
+      return { platforms: [...dslWithType, ...cmsPlatforms] }
     }
 
     case 'CHECK_AUTH': {
@@ -162,8 +187,20 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
     }
 
     case 'SYNC_ARTICLE': {
-      const { article, platforms, skipHistory, source = 'popup' } = message.payload
+      const { article, platforms, allSelectedPlatforms, skipHistory, source = 'popup' } = message.payload
       const allPlatformMetas = getAllPlatformMetas()
+
+      // 检查频率限制（不阻止，只返回警告）
+      const rateLimitWarning = await checkSyncFrequency(platforms)
+
+      // 获取 CMS 账户信息以区分 DSL 和 CMS
+      const cmsStorage = await chrome.storage.local.get('cmsAccounts')
+      const cmsAccounts = cmsStorage.cmsAccounts || []
+      const cmsAccountIds = new Set(cmsAccounts.map((a: any) => a.id))
+
+      // 分离 DSL 平台和 CMS 账户
+      const dslPlatformIds = platforms.filter((id: string) => !cmsAccountIds.has(id))
+      const cmsPlatformIds = platforms.filter((id: string) => cmsAccountIds.has(id))
 
       // 初始化同步状态（保存完整文章信息）
       const syncState: ActiveSyncState = {
@@ -175,54 +212,121 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
           html: article.html,
           markdown: article.markdown,
         },
-        selectedPlatforms: platforms,
+        selectedPlatforms: allSelectedPlatforms || platforms,
         results: [],
         startTime: Date.now(),
       }
       await saveSyncState(syncState)
 
-      const results = await syncToMultiplePlatforms(platforms, article, {
-        onResult: (result) => {
-          // 更新持久化状态
-          syncState.results.push({
-            ...result,
-            platformName: allPlatformMetas.find(p => p.id === result.platform)?.name || result.platform,
-          })
-          saveSyncState(syncState).catch(() => {})
+      const allResults: any[] = []
 
-          // 发送同步进度通知到 popup
-          chrome.runtime.sendMessage({
-            type: 'SYNC_PROGRESS',
-            payload: { result },
-          }).catch(() => {
-            // popup 可能未打开，忽略
-          })
-        },
-        onImageProgress: (platform, current, total) => {
-          // 发送图片上传进度通知到 popup
-          chrome.runtime.sendMessage({
-            type: 'IMAGE_PROGRESS',
-            payload: { platform, current, total },
-          }).catch(() => {
-            // popup 可能未打开，忽略
-          })
-        },
-      }, source)
+      // 同步到 DSL 平台
+      if (dslPlatformIds.length > 0) {
+        await syncToMultiplePlatforms(dslPlatformIds, article, {
+          onResult: (result) => {
+            // 更新持久化状态
+            const resultWithName = {
+              ...result,
+              platformName: allPlatformMetas.find(p => p.id === result.platform)?.name || result.platform,
+            }
+            syncState.results.push(resultWithName)
+            allResults.push(resultWithName)
+            saveSyncState(syncState).catch(() => {})
+
+            // 发送同步进度通知到 popup
+            chrome.runtime.sendMessage({
+              type: 'SYNC_PROGRESS',
+              payload: { result: resultWithName },
+            }).catch(() => {
+              // popup 可能未打开，忽略
+            })
+          },
+          onImageProgress: (platform, current, total) => {
+            // 发送图片上传进度通知到 popup
+            chrome.runtime.sendMessage({
+              type: 'IMAGE_PROGRESS',
+              payload: { platform, current, total },
+            }).catch(() => {
+              // popup 可能未打开，忽略
+            })
+          },
+        }, source)
+      }
+
+      // 同步到 CMS 账户
+      for (const accountId of cmsPlatformIds) {
+        const account = cmsAccounts.find((a: any) => a.id === accountId)
+        if (!account) continue
+
+        try {
+          const passwordStorage = await chrome.storage.local.get(`cms_pwd_${accountId}`)
+          const password = passwordStorage[`cms_pwd_${accountId}`]
+          if (!password) {
+            const cmsResult = {
+              platform: accountId,
+              platformName: account.name,
+              success: false,
+              error: '密码未找到',
+            }
+            allResults.push(cmsResult)
+            syncState.results.push(cmsResult)
+            saveSyncState(syncState).catch(() => {})
+            chrome.runtime.sendMessage({ type: 'SYNC_PROGRESS', payload: { result: cmsResult } }).catch(() => {})
+            continue
+          }
+
+          const credentials = { url: account.url, username: account.username, password }
+          let result
+          switch (account.type) {
+            case 'wordpress':
+              result = await wordpressAdapter.publish(credentials, article, { draftOnly: true })
+              break
+            case 'typecho':
+              result = await metaweblogAdapter.publishToTypecho(credentials, article, { draftOnly: true })
+              break
+            case 'metaweblog':
+              result = await metaweblogAdapter.publish(credentials, article, { draftOnly: true })
+              break
+            default:
+              result = { success: false, error: '不支持的 CMS 类型' }
+          }
+
+          const cmsResult = {
+            platform: accountId,
+            platformName: account.name,
+            success: result.success,
+            postUrl: result.postUrl,
+            draftOnly: true,
+            error: result.error,
+          }
+          allResults.push(cmsResult)
+          syncState.results.push(cmsResult)
+          saveSyncState(syncState).catch(() => {})
+          chrome.runtime.sendMessage({ type: 'SYNC_PROGRESS', payload: { result: cmsResult } }).catch(() => {})
+        } catch (error) {
+          const cmsResult = {
+            platform: accountId,
+            platformName: account.name,
+            success: false,
+            error: (error as Error).message,
+          }
+          allResults.push(cmsResult)
+          syncState.results.push(cmsResult)
+          saveSyncState(syncState).catch(() => {})
+          chrome.runtime.sendMessage({ type: 'SYNC_PROGRESS', payload: { result: cmsResult } }).catch(() => {})
+        }
+      }
 
       // 更新为完成状态
       syncState.status = 'completed'
-      syncState.results = results.map(r => ({
-        ...r,
-        platformName: allPlatformMetas.find(p => p.id === r.platform)?.name || r.platform,
-      }))
       await saveSyncState(syncState)
 
       // 保存到历史记录（popup 自己处理历史，跳过）
       if (!skipHistory) {
-        await saveToHistory(article, results, allPlatformMetas)
+        await saveToHistory(article, allResults, allPlatformMetas)
       }
 
-      return { results }
+      return { results: allResults, rateLimitWarning }
     }
 
     case 'OPEN_SYNC_PAGE': {
@@ -336,6 +440,22 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
           }).catch(() => {})
         }
 
+        // 更新同步状态（用于 popup 恢复）
+        const currentState = await chrome.storage.local.get(SYNC_STATE_KEY)
+        const syncState = currentState[SYNC_STATE_KEY] as ActiveSyncState | undefined
+        if (syncState) {
+          const cmsResult = {
+            platform: accountId,
+            platformName: account.name,
+            success: result.success,
+            postUrl: result.postUrl,
+            draftOnly: true,
+            error: result.error,
+          }
+          syncState.results.push(cmsResult)
+          await saveSyncState(syncState)
+        }
+
         return {
           platform: account.name,
           success: result.success,
@@ -346,6 +466,19 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
           timestamp: Date.now(),
         }
       } catch (error) {
+        // 更新同步状态（记录失败）
+        const currentState = await chrome.storage.local.get(SYNC_STATE_KEY)
+        const syncState = currentState[SYNC_STATE_KEY] as ActiveSyncState | undefined
+        if (syncState) {
+          const cmsResult = {
+            platform: accountId,
+            platformName: accountId,
+            success: false,
+            error: (error as Error).message,
+          }
+          syncState.results.push(cmsResult)
+          await saveSyncState(syncState)
+        }
         return { success: false, error: (error as Error).message }
       }
     }
@@ -393,6 +526,17 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
       return { success: true }
     }
 
+    case 'UPDATE_SYNC_STATUS': {
+      const { status } = message.payload
+      const currentState = await chrome.storage.local.get(SYNC_STATE_KEY)
+      const syncState = currentState[SYNC_STATE_KEY] as ActiveSyncState | undefined
+      if (syncState) {
+        syncState.status = status
+        await saveSyncState(syncState)
+      }
+      return { success: true }
+    }
+
     case 'CANCEL_SYNC': {
       const cancelled = cancelSync()
       logger.info('Sync cancelled:', cancelled)
@@ -407,6 +551,9 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
       if (!tabId) {
         return { error: 'No tab ID found' }
       }
+
+      // 检查频率限制（不阻止，只返回警告）
+      const rateLimitWarning = await checkSyncFrequency(platforms)
 
       // content script 已经转换好 html 和 markdown 字段
 
@@ -536,12 +683,13 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
       // 通知编辑器同步完成
       chrome.tabs.sendMessage(tabId, {
         type: 'SYNC_COMPLETE',
+        rateLimitWarning,
       }).catch(() => {})
 
       // 保存到历史
       await saveToHistory(article, allResults, allPlatformMetas)
 
-      return { results: allResults }
+      return { results: allResults, rateLimitWarning }
     }
 
     default:
@@ -583,6 +731,12 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       // 获取 DSL 平台
       const dslPlatforms = await checkAllPlatformsAuth(false)
 
+      // 为 DSL 平台添加 sourceType
+      const dslWithType = dslPlatforms.map((p: any) => ({
+        ...p,
+        sourceType: 'dsl' as const,
+      }))
+
       // 获取 CMS 账户
       const cmsStorage = await chrome.storage.local.get('cmsAccounts')
       const cmsAccounts = cmsStorage.cmsAccounts || []
@@ -600,7 +754,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         }))
 
       // 合并所有平台
-      const allPlatforms = [...dslPlatforms, ...cmsPlatforms]
+      const allPlatforms = [...dslWithType, ...cmsPlatforms]
 
       // 发送消息到 content script 打开编辑器
       chrome.tabs.sendMessage(tab.id, {
@@ -736,10 +890,10 @@ async function saveToHistory(
   allPlatformMetas: Array<{ id: string; name: string }>
 ): Promise<void> {
   try {
-    // 为结果添加平台名称
+    // 为结果添加平台名称（保留已有的 platformName，如 CMS 平台）
     const resultsWithNames = results.map(r => ({
       ...r,
-      platformName: allPlatformMetas.find(p => p.id === r.platform)?.name || r.platform,
+      platformName: r.platformName || allPlatformMetas.find(p => p.id === r.platform)?.name || r.platform,
     }))
 
     // 读取现有历史

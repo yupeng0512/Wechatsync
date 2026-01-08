@@ -8,7 +8,7 @@ interface SyncRecord {
   platforms: string[]
 }
 
-const STORAGE_KEY = 'syncHistory'
+const STORAGE_KEY = 'syncRateLimitHistory'
 const WARNING_INTERVAL_MS = 5 * 60 * 1000 // 5 分钟内重复发布会提醒
 const HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000 // 保留 24 小时的记录
 

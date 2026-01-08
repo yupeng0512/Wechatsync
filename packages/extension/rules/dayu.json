@@ -1,0 +1,50 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://mp.dayu.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://mp.dayu.com/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "mp.dayu.com",
+      "resourceTypes": ["xmlhttprequest"],
+      "excludedInitiatorDomains": ["dayu.com"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "Origin",
+          "operation": "set",
+          "value": "https://mp.dayu.com"
+        },
+        {
+          "header": "Referer",
+          "operation": "set",
+          "value": "https://mp.dayu.com/"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "ns.dayu.com",
+      "resourceTypes": ["xmlhttprequest"],
+      "excludedInitiatorDomains": ["dayu.com"]
+    }
+  }
+]

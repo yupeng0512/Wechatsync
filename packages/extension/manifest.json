@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "文章同步助手",
   "description": "一键同步文章到知乎、头条、掘金等 20+ 平台，支持 WordPress 等自建站",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "icons": {
     "16": "assets/icon-16.png",
     "48": "assets/icon-48.png",
@@ -16,8 +16,6 @@
     "storage",
     "unlimitedStorage",
     "cookies",
-    "notifications",
-    "offscreen",
     "declarativeNetRequest",
     "declarativeNetRequestWithHostAccess",
     "scripting",
@@ -129,6 +127,11 @@
         "id": "woshipm_rules",
         "enabled": true,
         "path": "rules/woshipm.json"
+      },
+      {
+        "id": "dayu_rules",
+        "enabled": true,
+        "path": "rules/dayu.json"
       }
     ]
   }

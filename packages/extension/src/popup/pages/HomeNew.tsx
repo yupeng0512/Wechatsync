@@ -62,35 +62,18 @@ export function HomeNew() {
       setRefreshing(true)
     }
     try {
-      const [response, cmsStorage] = await Promise.all([
-        chrome.runtime.sendMessage({ type: 'CHECK_ALL_AUTH', payload: { forceRefresh } }),
-        chrome.storage.local.get('cmsAccounts'),
-      ])
+      // CHECK_ALL_AUTH 现在返回 DSL 和 CMS 合并的列表
+      const response = await chrome.runtime.sendMessage({ type: 'CHECK_ALL_AUTH', payload: { forceRefresh } })
 
-      const platforms: GridPlatform[] = []
-
-      // DSL 平台（包括未登录的）
-      if (response.platforms) {
-        platforms.push(...response.platforms.map((p: any) => ({
-          id: p.id,
-          name: p.name,
-          icon: p.icon,
-          isAuthenticated: p.isAuthenticated,
-          username: p.username,
-          error: p.error,
-          homepage: p.homepage,
-        })))
-      }
-
-      // CMS 账户
-      const cmsAccounts = cmsStorage.cmsAccounts || []
-      platforms.push(...cmsAccounts.map((a: any) => ({
-        id: a.id,
-        name: a.name,
-        icon: getCMSIcon(a.type),
-        isAuthenticated: a.isConnected,
-        username: a.username,
-      })))
+      const platforms: GridPlatform[] = (response.platforms || []).map((p: any) => ({
+        id: p.id,
+        name: p.name,
+        icon: p.icon,
+        isAuthenticated: p.isAuthenticated,
+        username: p.username,
+        error: p.error,
+        homepage: p.homepage,
+      }))
 
       setAllPlatforms(platforms)
 
@@ -100,20 +83,6 @@ export function HomeNew() {
       logger.error('Failed to load platforms:', error)
     } finally {
       setRefreshing(false)
-    }
-  }
-
-  // CMS 图标
-  function getCMSIcon(type: string): string {
-    switch (type) {
-      case 'wordpress':
-        return 'https://s.w.org/style/images/about/WordPress-logotype-simplified.png'
-      case 'typecho':
-        return '/assets/typecho.ico'
-      case 'metaweblog':
-        return 'https://www.cnblogs.com/favicon.ico'
-      default:
-        return '/assets/icon-48.png'
     }
   }
 
@@ -276,8 +245,9 @@ export function HomeNew() {
             {historyExpanded && (
               <div className="space-y-2">
                 {recentHistory.map(item => {
-                  const success = item.results.filter(r => r.success).length
-                  const total = item.results.length
+                  const results = item.results || []
+                  const success = results.filter(r => r.success).length
+                  const total = results.length
                   return (
                     <div
                       key={item.id}
@@ -447,8 +417,8 @@ export function HomeNew() {
                 const warning = await checkRateLimit()
                 if (warning) {
                   setRateLimitWarning(warning)
-                  // 3秒后自动关闭提醒
-                  setTimeout(() => setRateLimitWarning(null), 3000)
+                  // 8秒后自动关闭提醒
+                  setTimeout(() => setRateLimitWarning(null), 8000)
                 }
                 // 无论有无警告都继续同步
                 startSync()

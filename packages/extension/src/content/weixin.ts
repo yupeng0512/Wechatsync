@@ -249,6 +249,11 @@ function injectSyncButton() {
         border-left: 3px solid #ff4d4f;
       }
 
+      .wechatsync-toast.warning {
+        border-left: 3px solid #faad14;
+        background: #fffbe6;
+      }
+
       /* 加载状态 */
       .wechatsync-loading {
         text-align: center;
@@ -564,6 +569,11 @@ function injectSyncButton() {
       // 显示结果列表（带草稿链接）
       renderResults()
 
+      // 显示频率限制警告（如果有）
+      if (response.rateLimitWarning) {
+        showToast(response.rateLimitWarning, 'warning', 8000)
+      }
+
       // 显示 toast
       if (failedCount === 0) {
         showToast(`✓ 成功同步到 ${successCount} 个平台`, 'success')
@@ -583,14 +593,14 @@ function injectSyncButton() {
   /**
    * 显示提示
    */
-  function showToast(message: string, type: 'success' | 'error') {
+  function showToast(message: string, type: 'success' | 'error' | 'warning', duration = 3000) {
     const toast = document.getElementById('wechatsync-toast')!
     toast.textContent = message
     toast.className = `wechatsync-toast show ${type}`
 
     setTimeout(() => {
       toast.classList.remove('show')
-    }, 3000)
+    }, duration)
   }
 
   /**
