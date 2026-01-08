@@ -256,68 +256,98 @@ export class CSDNAdapter extends CodeAdapter {
     }
     const imageBlob = await imageResponse.blob()
 
-    // 2. 获取上传凭证
-    const ext = src.split('.').pop()?.toLowerCase() || 'jpg'
-    const uploadInfoRes = await this.runtime.fetch(
-      `https://imgservice.csdn.net/direct/v1.0/image/upload?watermark=&type=blog&rtype=markdown`,
+    // 2. 获取文件扩展名
+    const ext = src.split('.').pop()?.toLowerCase()?.split('?')[0] || 'jpg'
+    const validExt = ['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext) ? ext : 'jpg'
+
+    // 3. 获取上传签名 (新 API: bizapi.csdn.net)
+    const apiPath = '/resource-api/v1/image/direct/upload/signature'
+    const headers = await this.signRequest(apiPath, 'POST')
+
+    const signatureRes = await this.runtime.fetch(
+      `https://bizapi.csdn.net${apiPath}`,
       {
-        method: 'GET',
+        method: 'POST',
         credentials: 'include',
-        headers: {
-          'x-image-app': 'direct_blog',
-          'x-image-suffix': ext,
-          'x-image-dir': 'direct',
-        },
+        headers,
+        body: JSON.stringify({
+          imageTemplate: '',
+          appName: 'direct_blog_markdown',
+          imageSuffix: validExt,
+        }),
       }
     )
 
-    const uploadInfo = await uploadInfoRes.json() as {
+    const signatureData = await signatureRes.json() as {
       code: number
       data?: {
-        host: string
         filePath: string
-        policy: string
+        host: string
         accessId: string
+        policy: string
         signature: string
         callbackUrl: string
+        callbackBody: string
+        callbackBodyType: string
+        customParam: {
+          rtype: string
+          filePath: string
+          isAudit: number
+          'x-image-app': string
+          type: string
+          'x-image-suffix': string
+          username: string
+        }
       }
     }
 
-    if (uploadInfo.code !== 200 || !uploadInfo.data) {
-      // 如果获取凭证失败，返回原 URL
-      logger.warn('Failed to get upload credentials, using original URL')
+    logger.debug('Upload signature response:', signatureData)
+
+    if (signatureData.code !== 200 || !signatureData.data) {
+      logger.warn('Failed to get upload signature, using original URL')
       return { url: src }
     }
 
-    // 3. 上传到 OSS
-    const formData = new FormData()
-    formData.append('key', uploadInfo.data.filePath)
-    formData.append('policy', uploadInfo.data.policy)
-    formData.append('OSSAccessKeyId', uploadInfo.data.accessId)
-    formData.append('success_action_status', '200')
-    formData.append('signature', uploadInfo.data.signature)
-    formData.append('callback', uploadInfo.data.callbackUrl)
-    formData.append('file', imageBlob, `image.${ext}`)
+    const uploadData = signatureData.data
+    const customParam = uploadData.customParam
 
-    const ossResponse = await fetch(uploadInfo.data.host, {
+    // 4. 上传到华为云 OBS
+    const formData = new FormData()
+    formData.append('key', uploadData.filePath)
+    formData.append('policy', uploadData.policy)
+    formData.append('signature', uploadData.signature)
+    formData.append('callbackBody', uploadData.callbackBody)
+    formData.append('callbackBodyType', uploadData.callbackBodyType)
+    formData.append('callbackUrl', uploadData.callbackUrl)
+    formData.append('AccessKeyId', uploadData.accessId)
+    formData.append('x:rtype', customParam.rtype)
+    formData.append('x:filePath', customParam.filePath)
+    formData.append('x:isAudit', String(customParam.isAudit))
+    formData.append('x:x-image-app', customParam['x-image-app'])
+    formData.append('x:type', customParam.type)
+    formData.append('x:x-image-suffix', customParam['x-image-suffix'])
+    formData.append('x:username', customParam.username)
+    formData.append('file', imageBlob, `image.${validExt}`)
+
+    const obsResponse = await this.runtime.fetch(uploadData.host, {
       method: 'POST',
       body: formData,
     })
 
-    const ossRes = await ossResponse.json() as {
+    const obsRes = await obsResponse.json() as {
       code: number
       data?: { imageUrl: string }
     }
 
-    logger.debug('Image upload response:', ossRes)
+    logger.debug('OBS upload response:', obsRes)
 
-    if (ossRes.code !== 200 || !ossRes.data?.imageUrl) {
-      // 上传失败，返回原 URL
+    if (obsRes.code !== 200 || !obsRes.data?.imageUrl) {
+      logger.warn('OBS upload failed, using original URL')
       return { url: src }
     }
 
     return {
-      url: ossRes.data.imageUrl,
+      url: obsRes.data.imageUrl,
     }
   }
 }
