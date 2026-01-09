@@ -5,6 +5,7 @@ import {
   syncToMultiplePlatforms,
   getAllPlatformMetas,
   cancelSync,
+  type SyncDetailProgress,
 } from '../adapters'
 import * as wordpressAdapter from '../adapters/cms/wordpress'
 import * as metaweblogAdapter from '../adapters/cms/metaweblog'
@@ -34,7 +35,8 @@ type CMSType = 'wordpress' | 'typecho' | 'metaweblog'
 
 // 同步状态类型
 interface ActiveSyncState {
-  status: 'syncing' | 'completed'
+  syncId: string  // 唯一同步任务ID
+  status: 'syncing' | 'completed' | 'failed' | 'cancelled'
   article: {
     title: string
     cover?: string
@@ -45,6 +47,11 @@ interface ActiveSyncState {
   selectedPlatforms: string[]
   results: SyncResult[]
   startTime: number
+}
+
+// 生成唯一同步ID
+function generateSyncId(): string {
+  return `sync_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
 }
 
 const SYNC_STATE_KEY = 'activeSyncState'
@@ -190,6 +197,23 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
       const { article, platforms, allSelectedPlatforms, skipHistory, source = 'popup' } = message.payload
       const allPlatformMetas = getAllPlatformMetas()
 
+      // 生成唯一同步ID
+      const syncId = generateSyncId()
+
+      // 获取发送消息的 tabId（如果来自 content script）
+      const senderTabId = sender?.tab?.id
+
+      // 辅助函数：发送消息到正确的接收者（所有消息带上 syncId）
+      const sendProgress = (msg: Record<string, unknown>) => {
+        const msgWithSyncId = { ...msg, syncId }
+        // 发送到 popup 等扩展页面
+        chrome.runtime.sendMessage(msgWithSyncId).catch(() => {})
+        // 如果请求来自 content script，也发送到该 tab
+        if (senderTabId) {
+          chrome.tabs.sendMessage(senderTabId, msgWithSyncId).catch(() => {})
+        }
+      }
+
       // 检查频率限制（不阻止，只返回警告）
       const rateLimitWarning = await checkSyncFrequency(platforms)
 
@@ -204,6 +228,7 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
 
       // 初始化同步状态（保存完整文章信息）
       const syncState: ActiveSyncState = {
+        syncId,
         status: 'syncing',
         article: {
           title: article.title,
@@ -217,6 +242,11 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
         startTime: Date.now(),
       }
       await saveSyncState(syncState)
+
+      // 创建历史记录（开始同步时就创建）
+      if (!skipHistory) {
+        await createHistoryItem(syncId, article, platforms)
+      }
 
       const allResults: any[] = []
 
@@ -233,21 +263,24 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
             allResults.push(resultWithName)
             saveSyncState(syncState).catch(() => {})
 
-            // 发送同步进度通知到 popup
-            chrome.runtime.sendMessage({
+            // 发送同步进度通知
+            sendProgress({
               type: 'SYNC_PROGRESS',
               payload: { result: resultWithName },
-            }).catch(() => {
-              // popup 可能未打开，忽略
             })
           },
           onImageProgress: (platform, current, total) => {
-            // 发送图片上传进度通知到 popup
-            chrome.runtime.sendMessage({
+            // 发送图片上传进度通知
+            sendProgress({
               type: 'IMAGE_PROGRESS',
               payload: { platform, current, total },
-            }).catch(() => {
-              // popup 可能未打开，忽略
+            })
+          },
+          // 新增：发送详细进度
+          onDetailProgress: (progress: SyncDetailProgress) => {
+            sendProgress({
+              type: 'SYNC_DETAIL_PROGRESS',
+              payload: progress,
             })
           },
         }, source)
@@ -257,6 +290,12 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
       for (const accountId of cmsPlatformIds) {
         const account = cmsAccounts.find((a: any) => a.id === accountId)
         if (!account) continue
+
+        // 发送 CMS 开始同步的详细进度
+        sendProgress({
+          type: 'SYNC_DETAIL_PROGRESS',
+          payload: { platform: accountId, platformName: account.name, stage: 'starting' },
+        })
 
         try {
           const passwordStorage = await chrome.storage.local.get(`cms_pwd_${accountId}`)
@@ -271,9 +310,19 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
             allResults.push(cmsResult)
             syncState.results.push(cmsResult)
             saveSyncState(syncState).catch(() => {})
-            chrome.runtime.sendMessage({ type: 'SYNC_PROGRESS', payload: { result: cmsResult } }).catch(() => {})
+            sendProgress({ type: 'SYNC_PROGRESS', payload: { result: cmsResult } })
+            sendProgress({
+              type: 'SYNC_DETAIL_PROGRESS',
+              payload: { platform: accountId, platformName: account.name, stage: 'failed', result: cmsResult, error: '密码未找到' },
+            })
             continue
           }
+
+          // 发送保存阶段
+          sendProgress({
+            type: 'SYNC_DETAIL_PROGRESS',
+            payload: { platform: accountId, platformName: account.name, stage: 'saving' },
+          })
 
           const credentials = { url: account.url, username: account.username, password }
           let result
@@ -302,7 +351,17 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
           allResults.push(cmsResult)
           syncState.results.push(cmsResult)
           saveSyncState(syncState).catch(() => {})
-          chrome.runtime.sendMessage({ type: 'SYNC_PROGRESS', payload: { result: cmsResult } }).catch(() => {})
+          sendProgress({ type: 'SYNC_PROGRESS', payload: { result: cmsResult } })
+          sendProgress({
+            type: 'SYNC_DETAIL_PROGRESS',
+            payload: {
+              platform: accountId,
+              platformName: account.name,
+              stage: result.success ? 'completed' : 'failed',
+              result: cmsResult,
+              error: result.error,
+            },
+          })
         } catch (error) {
           const cmsResult = {
             platform: accountId,
@@ -313,20 +372,29 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
           allResults.push(cmsResult)
           syncState.results.push(cmsResult)
           saveSyncState(syncState).catch(() => {})
-          chrome.runtime.sendMessage({ type: 'SYNC_PROGRESS', payload: { result: cmsResult } }).catch(() => {})
+          sendProgress({ type: 'SYNC_PROGRESS', payload: { result: cmsResult } })
+          sendProgress({
+            type: 'SYNC_DETAIL_PROGRESS',
+            payload: { platform: accountId, platformName: account.name, stage: 'failed', result: cmsResult, error: (error as Error).message },
+          })
         }
       }
 
+      // 确定最终状态
+      const successCount = allResults.filter(r => r.success).length
+      const failedCount = allResults.length - successCount
+      const finalStatus: SyncHistoryStatus = failedCount === allResults.length ? 'failed' : 'completed'
+
       // 更新为完成状态
-      syncState.status = 'completed'
+      syncState.status = finalStatus
       await saveSyncState(syncState)
 
-      // 保存到历史记录（popup 自己处理历史，跳过）
+      // 更新历史记录
       if (!skipHistory) {
-        await saveToHistory(article, allResults, allPlatformMetas)
+        await updateHistoryItem(syncId, finalStatus, allResults, allPlatformMetas)
       }
 
-      return { results: allResults, rateLimitWarning }
+      return { results: allResults, rateLimitWarning, syncId }
     }
 
     case 'OPEN_SYNC_PAGE': {
@@ -552,6 +620,14 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
         return { error: 'No tab ID found' }
       }
 
+      // 生成唯一同步ID
+      const syncId = generateSyncId()
+
+      // 辅助函数：发送消息到 tab（带 syncId）
+      const sendToTab = (msg: Record<string, unknown>) => {
+        chrome.tabs.sendMessage(tabId, { ...msg, syncId }).catch(() => {})
+      }
+
       // 检查频率限制（不阻止，只返回警告）
       const rateLimitWarning = await checkSyncFrequency(platforms)
 
@@ -568,6 +644,7 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
 
       // 初始化同步状态
       const syncState: ActiveSyncState = {
+        syncId,
         status: 'syncing',
         article: {
           title: article.title,
@@ -580,6 +657,9 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
         startTime: Date.now(),
       }
       await saveSyncState(syncState)
+
+      // 创建历史记录（开始同步时就创建）
+      await createHistoryItem(syncId, article, platforms)
 
       const allResults: any[] = []
 
@@ -597,16 +677,23 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
             saveSyncState(syncState).catch(() => {})
 
             // 发送进度到 content script (编辑器)
-            chrome.tabs.sendMessage(tabId, {
+            sendToTab({
               type: 'SYNC_PROGRESS',
               result: resultWithName,
-            }).catch(() => {})
+            })
           },
           onImageProgress: (platform, current, total) => {
-            chrome.tabs.sendMessage(tabId, {
+            sendToTab({
               type: 'IMAGE_PROGRESS',
               platform, current, total,
-            }).catch(() => {})
+            })
+          },
+          // 新增：发送详细进度到编辑器
+          onDetailProgress: (progress: SyncDetailProgress) => {
+            sendToTab({
+              type: 'SYNC_DETAIL_PROGRESS',
+              ...progress,
+            })
           },
         }, 'editor')
         // dslResults 已经通过 onResult 回调添加到 allResults
@@ -616,6 +703,12 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
       for (const accountId of cmsPlatformIds) {
         const account = cmsAccounts.find((a: any) => a.id === accountId)
         if (!account) continue
+
+        // 发送 CMS 开始同步的详细进度
+        sendToTab({
+          type: 'SYNC_DETAIL_PROGRESS',
+          platform: accountId, platformName: account.name, stage: 'starting',
+        })
 
         try {
           const passwordStorage = await chrome.storage.local.get(`cms_pwd_${accountId}`)
@@ -631,8 +724,18 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
             syncState.results.push(cmsResult)
             saveSyncState(syncState).catch(() => {})
             chrome.tabs.sendMessage(tabId, { type: 'SYNC_PROGRESS', result: cmsResult }).catch(() => {})
+            chrome.tabs.sendMessage(tabId, {
+              type: 'SYNC_DETAIL_PROGRESS',
+              platform: accountId, platformName: account.name, stage: 'failed', result: cmsResult, error: '密码未找到',
+            }).catch(() => {})
             continue
           }
+
+          // 发送保存阶段
+          chrome.tabs.sendMessage(tabId, {
+            type: 'SYNC_DETAIL_PROGRESS',
+            platform: accountId, platformName: account.name, stage: 'saving',
+          }).catch(() => {})
 
           const credentials = { url: account.url, username: account.username, password }
           let result
@@ -662,6 +765,14 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
           syncState.results.push(cmsResult)
           saveSyncState(syncState).catch(() => {})
           chrome.tabs.sendMessage(tabId, { type: 'SYNC_PROGRESS', result: cmsResult }).catch(() => {})
+          chrome.tabs.sendMessage(tabId, {
+            type: 'SYNC_DETAIL_PROGRESS',
+            platform: accountId,
+            platformName: account.name,
+            stage: result.success ? 'completed' : 'failed',
+            result: cmsResult,
+            error: result.error,
+          }).catch(() => {})
         } catch (error) {
           const cmsResult = {
             platform: accountId,
@@ -673,6 +784,10 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
           syncState.results.push(cmsResult)
           saveSyncState(syncState).catch(() => {})
           chrome.tabs.sendMessage(tabId, { type: 'SYNC_PROGRESS', result: cmsResult }).catch(() => {})
+          chrome.tabs.sendMessage(tabId, {
+            type: 'SYNC_DETAIL_PROGRESS',
+            platform: accountId, platformName: account.name, stage: 'failed', result: cmsResult, error: (error as Error).message,
+          }).catch(() => {})
         }
       }
 
@@ -873,16 +988,92 @@ interface SyncResult {
   error?: string
 }
 
+type SyncHistoryStatus = 'syncing' | 'completed' | 'failed' | 'cancelled'
+
 interface SyncHistoryItem {
-  id: string
+  id: string  // syncId
+  status: SyncHistoryStatus
   title: string
   cover?: string
-  timestamp: number
+  platforms: string[]  // 选中的平台ID列表
   results: SyncResult[]
+  startTime: number
+  endTime?: number
 }
 
 /**
- * 保存同步历史记录
+ * 创建同步历史记录（开始同步时调用）
+ */
+async function createHistoryItem(
+  syncId: string,
+  article: { title: string; cover?: string },
+  platforms: string[]
+): Promise<void> {
+  try {
+    const storage = await chrome.storage.local.get('syncHistory')
+    const existingHistory: SyncHistoryItem[] = storage.syncHistory || []
+
+    const historyItem: SyncHistoryItem = {
+      id: syncId,
+      status: 'syncing',
+      title: article.title || '未知文章',
+      cover: article.cover,
+      platforms,
+      results: [],
+      startTime: Date.now(),
+    }
+
+    // 添加到历史并限制数量
+    const newHistory = [historyItem, ...existingHistory].slice(0, MAX_HISTORY_ITEMS)
+    await chrome.storage.local.set({ syncHistory: newHistory })
+    logger.info('History created:', syncId, historyItem.title)
+  } catch (error) {
+    logger.error('Failed to create history:', error)
+  }
+}
+
+/**
+ * 更新同步历史记录（同步完成/失败时调用）
+ */
+async function updateHistoryItem(
+  syncId: string,
+  status: SyncHistoryStatus,
+  results: SyncResult[],
+  allPlatformMetas: Array<{ id: string; name: string }>
+): Promise<void> {
+  try {
+    const storage = await chrome.storage.local.get('syncHistory')
+    const existingHistory: SyncHistoryItem[] = storage.syncHistory || []
+
+    // 为结果添加平台名称
+    const resultsWithNames = results.map(r => ({
+      ...r,
+      platformName: r.platformName || allPlatformMetas.find(p => p.id === r.platform)?.name || r.platform,
+    }))
+
+    // 查找并更新历史条目
+    const updatedHistory = existingHistory.map(item => {
+      if (item.id === syncId) {
+        return {
+          ...item,
+          status,
+          results: resultsWithNames,
+          endTime: Date.now(),
+        }
+      }
+      return item
+    })
+
+    await chrome.storage.local.set({ syncHistory: updatedHistory })
+    logger.info('History updated:', syncId, status)
+  } catch (error) {
+    logger.error('Failed to update history:', error)
+  }
+}
+
+/**
+ * 保存同步历史记录（兼容旧逻辑，开始时创建+完成时更新）
+ * @deprecated Use createHistoryItem and updateHistoryItem instead
  */
 async function saveToHistory(
   article: { title: string; cover?: string },
@@ -900,13 +1091,16 @@ async function saveToHistory(
     const storage = await chrome.storage.local.get('syncHistory')
     const existingHistory: SyncHistoryItem[] = storage.syncHistory || []
 
-    // 创建新历史条目
+    // 创建新历史条目（兼容旧格式）
     const historyItem: SyncHistoryItem = {
       id: Date.now().toString(),
+      status: 'completed',
       title: article.title || '未知文章',
       cover: article.cover,
-      timestamp: Date.now(),
+      platforms: results.map(r => r.platform),
       results: resultsWithNames,
+      startTime: Date.now(),
+      endTime: Date.now(),
     }
 
     // 添加到历史并限制数量
@@ -914,8 +1108,8 @@ async function saveToHistory(
 
     // 保存到 storage
     await chrome.storage.local.set({ syncHistory: newHistory })
-    logger.info(' History saved:', historyItem.title)
+    logger.info('History saved:', historyItem.title)
   } catch (error) {
-    logger.error(' Failed to save history:', error)
+    logger.error('Failed to save history:', error)
   }
 }

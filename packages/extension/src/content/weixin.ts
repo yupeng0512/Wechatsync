@@ -11,16 +11,32 @@ interface Platform {
   isAuthenticated: boolean
 }
 
+// 同步阶段类型
+type SyncStage = 'starting' | 'uploading_images' | 'saving' | 'completed' | 'failed'
+
+// 平台同步详细进度
+interface PlatformProgress {
+  platform: string
+  platformName: string
+  stage: SyncStage
+  imageProgress?: { current: number; total: number }
+  error?: string
+}
+
 interface SyncState {
   status: 'idle' | 'syncing' | 'success' | 'error'
   platforms: Platform[]
   results: Array<{ platform: string; success: boolean; postUrl?: string; error?: string }>
+  platformProgress: Map<string, PlatformProgress>
+  selectedPlatforms: string[]
 }
 
 const state: SyncState = {
   status: 'idle',
   platforms: [],
   results: [],
+  platformProgress: new Map(),
+  selectedPlatforms: [],
 }
 
 function injectSyncButton() {
@@ -325,6 +341,70 @@ function injectSyncButton() {
         text-decoration: underline;
       }
 
+      /* 同步进度列表 */
+      .wechatsync-progress {
+        margin-bottom: 12px;
+        max-height: 200px;
+        overflow-y: auto;
+      }
+
+      .wechatsync-progress-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px;
+        border-radius: 4px;
+        margin-bottom: 4px;
+        font-size: 12px;
+        background: #f9f9f9;
+      }
+
+      .wechatsync-progress-item.active {
+        background: #e6f7e6;
+      }
+
+      .wechatsync-progress-item.success {
+        background: #f6ffed;
+      }
+
+      .wechatsync-progress-item.error {
+        background: #fff2f0;
+      }
+
+      .wechatsync-progress-item.pending {
+        color: #999;
+      }
+
+      .wechatsync-progress-icon {
+        width: 14px;
+        text-align: center;
+        flex-shrink: 0;
+        font-size: 11px;
+      }
+
+      .wechatsync-progress-item.success .wechatsync-progress-icon { color: #52c41a; }
+      .wechatsync-progress-item.error .wechatsync-progress-icon { color: #ff4d4f; }
+      .wechatsync-progress-item.active .wechatsync-progress-icon { color: #07c160; }
+
+      .wechatsync-progress-name {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .wechatsync-progress-status {
+        font-size: 11px;
+        color: #666;
+        flex-shrink: 0;
+        max-width: 70px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .wechatsync-progress-item.error .wechatsync-progress-status { color: #ff4d4f; }
+
       /* 底部链接 */
       .wechatsync-footer {
         display: flex;
@@ -350,6 +430,9 @@ function injectSyncButton() {
 
       <!-- 同步结果区域（同步后显示） -->
       <div class="wechatsync-results" id="wechatsync-results" style="display: none;"></div>
+
+      <!-- 同步进度区域（同步中显示） -->
+      <div class="wechatsync-progress" id="wechatsync-progress" style="display: none;"></div>
 
       <!-- 平台选择区域 -->
       <div class="wechatsync-platforms" id="wechatsync-platforms">
@@ -389,6 +472,7 @@ function injectSyncButton() {
   const moreBtn = document.getElementById('wechatsync-more-btn') as HTMLButtonElement
   const platformsContainer = document.getElementById('wechatsync-platforms')!
   const resultsContainer = document.getElementById('wechatsync-results')!
+  const progressContainer = document.getElementById('wechatsync-progress')!
   const panelHeader = document.getElementById('wechatsync-panel-header')!
   const historyLink = document.getElementById('wechatsync-history-link')!
   const addCmsLink = document.getElementById('wechatsync-add-cms-link')!
@@ -541,16 +625,27 @@ function injectSyncButton() {
       return
     }
 
+    // 保存到 state
+    state.selectedPlatforms = selectedPlatforms
+
     // 保存平台选择偏好
     await chrome.storage.local.set({ lastSelectedPlatforms: selectedPlatforms })
 
     // 更新状态
     state.status = 'syncing'
     state.results = []
+    state.platformProgress.clear()
     mainBtn.classList.add('syncing')
     mainBtn.classList.remove('success', 'error')
     syncBtn.disabled = true
     syncBtn.textContent = '同步中...'
+
+    // 切换到进度视图
+    platformsContainer.style.display = 'none'
+    resultsContainer.style.display = 'none'
+    progressContainer.style.display = 'block'
+    panelHeader.textContent = '同步中'
+    renderSyncProgress()
 
     try {
       const response = await chrome.runtime.sendMessage({
@@ -604,9 +699,76 @@ function injectSyncButton() {
   }
 
   /**
+   * 获取阶段文本
+   */
+  function getStageText(progress: PlatformProgress): string {
+    switch (progress.stage) {
+      case 'starting':
+        return '准备中...'
+      case 'uploading_images':
+        return progress.imageProgress
+          ? `上传图片 ${progress.imageProgress.current}/${progress.imageProgress.total}`
+          : '上传图片...'
+      case 'saving':
+        return '保存文章...'
+      case 'completed':
+        return '完成'
+      case 'failed':
+        return progress.error || '失败'
+      default:
+        return '等待中'
+    }
+  }
+
+  /**
+   * 渲染同步进度
+   */
+  function renderSyncProgress() {
+    let html = ''
+    for (const platformId of state.selectedPlatforms) {
+      const platform = state.platforms.find(p => p.id === platformId)
+      const progress = state.platformProgress.get(platformId)
+      const result = state.results.find(r => r.platform === platformId)
+
+      if (result) {
+        // 已完成
+        html += `
+          <div class="wechatsync-progress-item ${result.success ? 'success' : 'error'}">
+            <span class="wechatsync-progress-icon">${result.success ? '✓' : '✗'}</span>
+            <span class="wechatsync-progress-name">${platform?.name || platformId}</span>
+            <span class="wechatsync-progress-status">${result.success ? '完成' : (result.error || '失败')}</span>
+          </div>
+        `
+      } else if (progress) {
+        // 进行中
+        html += `
+          <div class="wechatsync-progress-item active">
+            <span class="wechatsync-progress-icon">⟳</span>
+            <span class="wechatsync-progress-name">${platform?.name || platformId}</span>
+            <span class="wechatsync-progress-status">${getStageText(progress)}</span>
+          </div>
+        `
+      } else {
+        // 等待中
+        html += `
+          <div class="wechatsync-progress-item pending">
+            <span class="wechatsync-progress-icon">○</span>
+            <span class="wechatsync-progress-name">${platform?.name || platformId}</span>
+            <span class="wechatsync-progress-status">等待中</span>
+          </div>
+        `
+      }
+    }
+    progressContainer.innerHTML = html
+  }
+
+  /**
    * 渲染同步结果（带草稿链接）
    */
   function renderResults() {
+    // 隐藏进度视图
+    progressContainer.style.display = 'none'
+
     if (state.results.length === 0) {
       resultsContainer.style.display = 'none'
       platformsContainer.style.display = 'block'
@@ -647,6 +809,7 @@ function injectSyncButton() {
     syncBtn.onclick = () => {
       // 切换回平台选择视图
       state.results = []
+      state.platformProgress.clear()
       resultsContainer.style.display = 'none'
       platformsContainer.style.display = 'block'
       panelHeader.textContent = '选择同步平台'
@@ -654,6 +817,30 @@ function injectSyncButton() {
       loadPlatforms()
     }
   }
+
+  // 监听来自 background 的进度消息
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message.type === 'SYNC_DETAIL_PROGRESS') {
+      const progress = message.payload
+      if (progress?.platform) {
+        state.platformProgress.set(progress.platform, progress)
+        if (state.status === 'syncing') {
+          renderSyncProgress()
+        }
+      }
+    }
+    if (message.type === 'SYNC_PROGRESS') {
+      // 单个平台完成，添加到结果
+      const result = message.payload?.result
+      if (result && state.status === 'syncing') {
+        // 检查是否已存在
+        if (!state.results.find(r => r.platform === result.platform)) {
+          state.results.push(result)
+          renderSyncProgress()
+        }
+      }
+    }
+  })
 }
 
 /**

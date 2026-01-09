@@ -20,6 +20,7 @@ export function HomeNew() {
     results,
     error,
     imageProgress,
+    platformProgress,
     history,
     recovered,
     loadPlatforms,
@@ -284,9 +285,7 @@ export function HomeNew() {
               <div className="flex items-center gap-2">
                 <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
                 <span className="text-sm font-medium text-blue-700 dark:text-blue-300">
-                  {syncingPlatforms.length > 0
-                    ? `正在同步: ${allPlatforms.find(p => p.id === syncingPlatforms[0])?.name || ''}`
-                    : '同步中...'}
+                  同步中...
                 </span>
               </div>
               <div className="flex items-center gap-2">
@@ -311,39 +310,82 @@ export function HomeNew() {
               />
             </div>
 
-            {/* 图片上传进度 */}
-            {imageProgress && (
-              <div className="flex items-center gap-2 text-xs text-blue-600 dark:text-blue-400">
-                <span>📷 上传图片</span>
-                <div className="flex-1 h-1.5 bg-blue-200 dark:bg-blue-800 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-blue-400 transition-all"
-                    style={{ width: `${(imageProgress.current / imageProgress.total) * 100}%` }}
-                  />
-                </div>
-                <span className="font-medium">{imageProgress.current}/{imageProgress.total}</span>
-              </div>
-            )}
+            {/* 各平台详细进度 */}
+            <div className="space-y-1.5 max-h-32 overflow-y-auto">
+              {selectedPlatforms.map(platformId => {
+                const platform = allPlatforms.find(p => p.id === platformId)
+                const progress = platformProgress.get(platformId)
+                const result = results.find(r => r.platform === platformId)
 
-            {/* 实时结果（最近3条） */}
-            {results.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {results.slice(-3).map(r => (
-                  <span
-                    key={r.platform}
-                    className={cn(
-                      'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs',
-                      r.success
-                        ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                        : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
-                    )}
-                  >
-                    {r.success ? <Check className="w-3 h-3" /> : <X className="w-3 h-3" />}
-                    {r.platformName || r.platform}
-                  </span>
-                ))}
-              </div>
-            )}
+                // 已完成的平台
+                if (result) {
+                  return (
+                    <div key={platformId} className="flex items-center gap-2 text-xs">
+                      {result.success ? (
+                        <Check className="w-3 h-3 text-green-500 flex-shrink-0" />
+                      ) : (
+                        <X className="w-3 h-3 text-red-500 flex-shrink-0" />
+                      )}
+                      <span className={cn(
+                        'font-medium',
+                        result.success ? 'text-green-700 dark:text-green-400' : 'text-red-700 dark:text-red-400'
+                      )}>
+                        {platform?.name || platformId}
+                      </span>
+                      {result.success ? (
+                        <span className="text-green-600 dark:text-green-500">完成</span>
+                      ) : (
+                        <span className="text-red-600 dark:text-red-500 truncate max-w-[120px]" title={result.error}>
+                          {result.error || '失败'}
+                        </span>
+                      )}
+                    </div>
+                  )
+                }
+
+                // 进行中的平台
+                if (progress) {
+                  const stageText = {
+                    starting: '准备中...',
+                    uploading_images: progress.imageProgress
+                      ? `上传图片 ${progress.imageProgress.current}/${progress.imageProgress.total}`
+                      : '上传图片...',
+                    saving: '保存文章...',
+                    completed: '完成',
+                    failed: progress.error || '失败',
+                  }[progress.stage]
+
+                  return (
+                    <div key={platformId} className="flex items-center gap-2 text-xs">
+                      <Loader2 className="w-3 h-3 animate-spin text-blue-500 flex-shrink-0" />
+                      <span className="font-medium text-blue-700 dark:text-blue-300">
+                        {platform?.name || platformId}
+                      </span>
+                      <span className="text-blue-600 dark:text-blue-400">
+                        {stageText}
+                      </span>
+                      {progress.stage === 'uploading_images' && progress.imageProgress && (
+                        <div className="flex-1 h-1 bg-blue-200 dark:bg-blue-800 rounded-full overflow-hidden max-w-[60px]">
+                          <div
+                            className="h-full bg-blue-400 transition-all"
+                            style={{ width: `${(progress.imageProgress.current / progress.imageProgress.total) * 100}%` }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )
+                }
+
+                // 等待中的平台
+                return (
+                  <div key={platformId} className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                    <div className="w-3 h-3 rounded-full border border-gray-300 dark:border-gray-600 flex-shrink-0" />
+                    <span>{platform?.name || platformId}</span>
+                    <span>等待中</span>
+                  </div>
+                )
+              })}
+            </div>
           </div>
         )}
 

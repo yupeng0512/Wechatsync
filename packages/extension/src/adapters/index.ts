@@ -259,11 +259,33 @@ export async function checkAllPlatformsAuth(forceRefresh = false) {
 export type ImageProgressCallback = (platform: string, current: number, total: number) => void
 
 /**
+ * 同步阶段类型
+ */
+export type SyncStage = 'starting' | 'uploading_images' | 'saving' | 'completed' | 'failed'
+
+/**
+ * 详细同步进度类型
+ */
+export interface SyncDetailProgress {
+  platform: string
+  platformName: string
+  stage: SyncStage
+  // 图片上传进度（uploading_images 阶段）
+  imageProgress?: { current: number; total: number }
+  // 同步结果（completed/failed 阶段）
+  result?: SyncResult
+  // 错误信息（failed 阶段）
+  error?: string
+}
+
+/**
  * 同步进度回调类型
  */
 export interface SyncCallbacks {
   onResult?: (result: SyncResult) => void
   onImageProgress?: ImageProgressCallback
+  // 新增：详细进度回调
+  onDetailProgress?: (progress: SyncDetailProgress) => void
 }
 
 /**
@@ -348,25 +370,80 @@ export async function syncToMultiplePlatforms(
   // 追踪首次同步尝试里程碑
   trackMilestone('first_sync_attempt').catch(() => {})
 
+  // 获取平台名称的辅助函数
+  const getPlatformName = (platformId: string): string => {
+    const meta = getAllPlatformMetas().find(p => p.id === platformId)
+    return meta?.name || platformId
+  }
+
   // 同步单个平台并追踪
   const syncOne = async (platformId: string): Promise<SyncResult> => {
+    const platformName = getPlatformName(platformId)
+
     // 检查是否已取消
     if (signal.aborted) {
-      return {
+      const cancelledResult: SyncResult = {
         platform: platformId,
         success: false,
         error: '已取消',
         timestamp: Date.now(),
       }
+      callbacks?.onDetailProgress?.({
+        platform: platformId,
+        platformName,
+        stage: 'failed',
+        result: cancelledResult,
+        error: '已取消',
+      })
+      return cancelledResult
     }
 
+    // 通知开始同步
+    callbacks?.onDetailProgress?.({
+      platform: platformId,
+      platformName,
+      stage: 'starting',
+    })
+
     const platformStartTime = Date.now()
+
+    // 包装图片进度回调，同时触发 onDetailProgress
+    const wrappedImageProgress: ImageProgressCallback | undefined = callbacks?.onImageProgress || callbacks?.onDetailProgress
+      ? (platform, current, total) => {
+          callbacks?.onImageProgress?.(platform, current, total)
+          callbacks?.onDetailProgress?.({
+            platform: platformId,
+            platformName,
+            stage: 'uploading_images',
+            imageProgress: { current, total },
+          })
+          // 图片上传完成后，切换到 saving 阶段
+          if (current === total && total > 0) {
+            callbacks?.onDetailProgress?.({
+              platform: platformId,
+              platformName,
+              stage: 'saving',
+            })
+          }
+        }
+      : undefined
+
     const result = await syncToPlatform(
       platformId,
       article,
       undefined,
-      callbacks?.onImageProgress
+      wrappedImageProgress
     )
+
+    // 通知完成/失败
+    callbacks?.onDetailProgress?.({
+      platform: platformId,
+      platformName,
+      stage: result.success ? 'completed' : 'failed',
+      result,
+      error: result.error,
+    })
+
     callbacks?.onResult?.(result)
 
     // 追踪单个平台同步结果

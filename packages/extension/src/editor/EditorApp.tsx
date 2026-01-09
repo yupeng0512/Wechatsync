@@ -28,6 +28,18 @@ interface SyncResult {
   error?: string
 }
 
+// 同步阶段类型
+type SyncStage = 'starting' | 'uploading_images' | 'saving' | 'completed' | 'failed'
+
+// 平台同步详细进度
+interface PlatformProgress {
+  platform: string
+  platformName: string
+  stage: SyncStage
+  imageProgress?: { current: number; total: number }
+  error?: string
+}
+
 type SyncStatus = 'idle' | 'syncing' | 'completed'
 
 // Storage key for selected platforms (same as popup)
@@ -48,6 +60,7 @@ export function EditorApp() {
   const [results, setResults] = useState<SyncResult[]>([])
   const [error, setError] = useState<string | null>(null)
   const [rateLimitWarning, setRateLimitWarning] = useState<string | null>(null)
+  const [platformProgress, setPlatformProgress] = useState<Map<string, PlatformProgress>>(new Map())
 
   const titleRef = useRef<HTMLHeadingElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -79,7 +92,19 @@ export function EditorApp() {
           // 保存到 storage，确保与 popup 同步
           saveSelectedPlatforms(selected)
         } else if (data.type === 'SYNC_PROGRESS') {
-          setResults(prev => [...prev, data.result])
+          if (data.result) {
+            setResults(prev => [...prev, data.result])
+          }
+        } else if (data.type === 'SYNC_DETAIL_PROGRESS') {
+          // 更新平台详细进度
+          const progress = data.progress
+          if (progress?.platform) {
+            setPlatformProgress(prev => {
+              const next = new Map(prev)
+              next.set(progress.platform, progress)
+              return next
+            })
+          }
         } else if (data.type === 'SYNC_COMPLETE') {
           setStatus('completed')
           // 显示频率限制警告（如果有）
@@ -139,6 +164,7 @@ export function EditorApp() {
     setStatus('syncing')
     setResults([])
     setError(null)
+    setPlatformProgress(new Map())
 
     // 发送同步请求到父窗口
     window.parent.postMessage(JSON.stringify({
@@ -365,38 +391,94 @@ export function EditorApp() {
         </article>
       </main>
 
-      {/* 同步结果浮窗 */}
-      {results.length > 0 && (
+      {/* 同步进度/结果浮窗 */}
+      {(status === 'syncing' || results.length > 0) && (
         <div className="fixed bottom-4 right-4 bg-white rounded-lg shadow-lg border p-4 w-80 max-h-80 overflow-y-auto z-50">
-          <h3 className="font-medium text-gray-900 mb-3">同步结果</h3>
+          <h3 className="font-medium text-gray-900 mb-3 flex items-center gap-2">
+            {status === 'syncing' && <Loader2 className="w-4 h-4 animate-spin text-blue-500" />}
+            {status === 'syncing' ? '同步中' : '同步结果'}
+            <span className="text-sm font-normal text-gray-500">
+              {results.length}/{selectedPlatforms.size}
+            </span>
+          </h3>
           <div className="space-y-2">
-            {results.map(r => (
-              <div key={r.platform} className="flex items-center justify-between text-sm">
-                <span className="flex items-center gap-2">
-                  {r.success ? (
-                    <Check className="w-4 h-4 text-green-500" />
-                  ) : (
-                    <X className="w-4 h-4 text-red-500" />
-                  )}
-                  {r.platformName || r.platform}
-                </span>
-                {r.success && r.postUrl && (
-                  <a
-                    href={r.postUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-blue-500 hover:underline flex items-center gap-1"
-                  >
-                    查看 <ExternalLink className="w-3 h-3" />
-                  </a>
-                )}
-                {!r.success && r.error && (
-                  <span className="text-red-500 truncate max-w-[120px]" title={r.error}>
-                    {r.error}
+            {Array.from(selectedPlatforms).map(platformId => {
+              const platform = platforms.find(p => p.id === platformId)
+              const result = results.find(r => r.platform === platformId)
+              const progress = platformProgress.get(platformId)
+
+              // 获取阶段文本
+              const getStageText = (p: PlatformProgress) => {
+                switch (p.stage) {
+                  case 'starting': return '准备中...'
+                  case 'uploading_images':
+                    return p.imageProgress
+                      ? `上传图片 ${p.imageProgress.current}/${p.imageProgress.total}`
+                      : '上传图片...'
+                  case 'saving': return '保存文章...'
+                  case 'completed': return '完成'
+                  case 'failed': return p.error || '失败'
+                  default: return '等待中'
+                }
+              }
+
+              if (result) {
+                // 已完成
+                return (
+                  <div key={platformId} className="flex items-center justify-between text-sm">
+                    <span className="flex items-center gap-2">
+                      {result.success ? (
+                        <Check className="w-4 h-4 text-green-500" />
+                      ) : (
+                        <X className="w-4 h-4 text-red-500" />
+                      )}
+                      {platform?.name || platformId}
+                    </span>
+                    {result.success && result.postUrl && (
+                      <a
+                        href={result.postUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-500 hover:underline flex items-center gap-1"
+                      >
+                        查看 <ExternalLink className="w-3 h-3" />
+                      </a>
+                    )}
+                    {!result.success && result.error && (
+                      <span className="text-red-500 truncate max-w-[120px]" title={result.error}>
+                        {result.error}
+                      </span>
+                    )}
+                  </div>
+                )
+              }
+
+              if (progress) {
+                // 进行中
+                return (
+                  <div key={platformId} className="flex items-center justify-between text-sm">
+                    <span className="flex items-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
+                      {platform?.name || platformId}
+                    </span>
+                    <span className="text-blue-600 text-xs">
+                      {getStageText(progress)}
+                    </span>
+                  </div>
+                )
+              }
+
+              // 等待中
+              return (
+                <div key={platformId} className="flex items-center justify-between text-sm text-gray-400">
+                  <span className="flex items-center gap-2">
+                    <div className="w-4 h-4 rounded-full border border-gray-300" />
+                    {platform?.name || platformId}
                   </span>
-                )}
-              </div>
-            ))}
+                  <span className="text-xs">等待中</span>
+                </div>
+              )
+            })}
           </div>
         </div>
       )}

@@ -422,6 +422,21 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       type: 'SYNC_PROGRESS',
       result: message.result,
     }), '*')
+  } else if (message.type === 'SYNC_DETAIL_PROGRESS') {
+    // 转发详细进度到编辑器
+    // 兼容两种格式：message.payload (from SYNC_ARTICLE) 或直接展开 (from START_SYNC_FROM_EDITOR)
+    const progress = message.payload || {
+      platform: message.platform,
+      platformName: message.platformName,
+      stage: message.stage,
+      imageProgress: message.imageProgress,
+      result: message.result,
+      error: message.error,
+    }
+    editorIframe?.contentWindow?.postMessage(JSON.stringify({
+      type: 'SYNC_DETAIL_PROGRESS',
+      progress,
+    }), '*')
   } else if (message.type === 'SYNC_COMPLETE') {
     // 同步完成
     editorIframe?.contentWindow?.postMessage(JSON.stringify({

@@ -80,6 +80,18 @@ interface ImageProgress {
   total: number
 }
 
+// 同步阶段类型
+type SyncStage = 'starting' | 'uploading_images' | 'saving' | 'completed' | 'failed'
+
+// 平台同步详细进度
+interface PlatformProgress {
+  platform: string
+  platformName: string
+  stage: SyncStage
+  imageProgress?: { current: number; total: number }
+  error?: string
+}
+
 interface SyncHistoryItem {
   id: string
   title: string
@@ -99,6 +111,9 @@ interface SyncState {
 
   // 图片上传进度
   imageProgress: ImageProgress | null
+
+  // 平台详细同步进度
+  platformProgress: Map<string, PlatformProgress>
 
   // 同步历史
   history: SyncHistoryItem[]
@@ -123,6 +138,7 @@ interface SyncState {
   reset: () => void
   updateProgress: (result: SyncResult) => void
   updateImageProgress: (progress: ImageProgress | null) => void
+  updateDetailProgress: (progress: PlatformProgress) => void
   clearSyncState: () => Promise<void>
   updateArticle: (updates: Partial<Article>) => void
   clearRateLimitWarning: () => void
@@ -162,6 +178,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
   results: [],
   error: null,
   imageProgress: null,
+  platformProgress: new Map(),
   history: [],
   recovered: false,
   rateLimitWarning: null,
@@ -366,7 +383,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     // 追踪漏斗：开始同步
     trackFunnel('sync_started', 'popup', { platform_count: selectedPlatforms.length }).catch(() => {})
 
-    set({ status: 'syncing', results: [], error: null, imageProgress: null })
+    set({ status: 'syncing', results: [], error: null, imageProgress: null, platformProgress: new Map() })
 
     try {
       // SYNC_ARTICLE 现在同时处理 DSL 和 CMS 平台
@@ -498,6 +515,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
       results: [],
       error: null,
       imageProgress: null,
+      platformProgress: new Map(),
     })
     // 清除持久化的同步状态
     chrome.runtime.sendMessage({ type: 'CLEAR_SYNC_STATE' }).catch(() => {})
@@ -511,6 +529,14 @@ export const useSyncStore = create<SyncState>((set, get) => ({
 
   updateImageProgress: (progress: ImageProgress | null) => {
     set({ imageProgress: progress })
+  },
+
+  updateDetailProgress: (progress: PlatformProgress) => {
+    set(state => {
+      const newMap = new Map(state.platformProgress)
+      newMap.set(progress.platform, progress)
+      return { platformProgress: newMap }
+    })
   },
 
   // 追踪草稿链接点击
@@ -532,9 +558,20 @@ export const useSyncStore = create<SyncState>((set, get) => ({
 // 监听来自 background 的进度消息
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === 'SYNC_PROGRESS') {
-    useSyncStore.getState().updateProgress(message.payload.result)
+    const result = message.payload?.result
+    if (result) {
+      useSyncStore.getState().updateProgress(result)
+    }
   }
   if (message.type === 'IMAGE_PROGRESS') {
-    useSyncStore.getState().updateImageProgress(message.payload)
+    if (message.payload) {
+      useSyncStore.getState().updateImageProgress(message.payload)
+    }
+  }
+  if (message.type === 'SYNC_DETAIL_PROGRESS') {
+    const progress = message.payload
+    if (progress?.platform) {
+      useSyncStore.getState().updateDetailProgress(progress)
+    }
   }
 })

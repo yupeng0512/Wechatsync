@@ -21,6 +21,18 @@ interface SyncResult {
   error?: string
 }
 
+// 同步阶段类型
+type SyncStage = 'starting' | 'uploading_images' | 'saving' | 'completed' | 'failed'
+
+// 平台同步详细进度
+interface PlatformProgress {
+  platform: string
+  platformName: string
+  stage: SyncStage
+  imageProgress?: { current: number; total: number }
+  error?: string
+}
+
 type ViewState = 'loading' | 'platforms' | 'syncing' | 'results' | 'empty'
 
 interface State {
@@ -29,6 +41,7 @@ interface State {
   selectedPlatforms: string[]
   results: SyncResult[]
   collapsed: boolean
+  platformProgress: Map<string, PlatformProgress>
 }
 
 const state: State = {
@@ -37,6 +50,7 @@ const state: State = {
   selectedPlatforms: [],
   results: [],
   collapsed: true, // 默认收起
+  platformProgress: new Map(),
 }
 
 // 检查是否是编辑页面
@@ -539,19 +553,7 @@ function renderView(view: ViewState) {
       break
 
     case 'syncing':
-      content.innerHTML = `
-        <div class="ws-loading">
-          <svg class="ws-spinning" width="24" height="24" viewBox="0 0 24 24" fill="#07c160">
-            <path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/>
-          </svg>
-          <div style="margin-top: 8px">同步中...</div>
-          <button class="ws-btn ws-btn-secondary" id="ws-cancel" style="margin-top: 12px; font-size: 12px; padding: 6px 16px;">取消</button>
-        </div>
-      `
-      document.getElementById('ws-cancel')?.addEventListener('click', () => {
-        state.results = []
-        renderView('platforms')
-      })
+      renderSyncingView()
       break
 
     case 'results':
@@ -606,6 +608,172 @@ function renderPlatformList() {
 
   // 绑定同步按钮
   document.getElementById('ws-sync')?.addEventListener('click', startSync)
+}
+
+// 获取阶段文本
+function getStageText(progress: PlatformProgress): string {
+  switch (progress.stage) {
+    case 'starting':
+      return '准备中...'
+    case 'uploading_images':
+      return progress.imageProgress
+        ? `上传图片 ${progress.imageProgress.current}/${progress.imageProgress.total}`
+        : '上传图片...'
+    case 'saving':
+      return '保存文章...'
+    case 'completed':
+      return '完成'
+    case 'failed':
+      return progress.error || '失败'
+    default:
+      return '等待中'
+  }
+}
+
+function renderSyncingView() {
+  const content = document.getElementById('ws-content')!
+  const completedCount = state.results.length
+  const totalCount = state.selectedPlatforms.length
+
+  let progressHtml = ''
+  for (const platformId of state.selectedPlatforms) {
+    const platform = state.platforms.find(p => p.id === platformId)
+    const progress = state.platformProgress.get(platformId)
+    const result = state.results.find(r => r.platform === platformId)
+
+    if (result) {
+      // 已完成
+      progressHtml += `
+        <div class="ws-progress-item ${result.success ? 'success' : 'error'}">
+          <span class="ws-progress-icon">${result.success ? '✓' : '✗'}</span>
+          <span class="ws-progress-name">${platform?.name || platformId}</span>
+          <span class="ws-progress-status">${result.success ? '完成' : (result.error || '失败')}</span>
+        </div>
+      `
+    } else if (progress) {
+      // 进行中
+      progressHtml += `
+        <div class="ws-progress-item active">
+          <span class="ws-progress-icon ws-spinning">⟳</span>
+          <span class="ws-progress-name">${platform?.name || platformId}</span>
+          <span class="ws-progress-status">${getStageText(progress)}</span>
+        </div>
+      `
+    } else {
+      // 等待中
+      progressHtml += `
+        <div class="ws-progress-item pending">
+          <span class="ws-progress-icon">○</span>
+          <span class="ws-progress-name">${platform?.name || platformId}</span>
+          <span class="ws-progress-status">等待中</span>
+        </div>
+      `
+    }
+  }
+
+  content.innerHTML = `
+    <style>
+      .ws-progress-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 10px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid #f0f0f0;
+      }
+      .ws-progress-title {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-weight: 500;
+        color: #07c160;
+      }
+      .ws-progress-count {
+        font-size: 12px;
+        color: #999;
+      }
+      .ws-progress-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        max-height: 180px;
+        overflow-y: auto;
+      }
+      .ws-progress-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px;
+        border-radius: 4px;
+        font-size: 12px;
+        background: #f9f9f9;
+      }
+      .ws-progress-item.active {
+        background: #e6f7e6;
+      }
+      .ws-progress-item.success {
+        background: #f6ffed;
+      }
+      .ws-progress-item.error {
+        background: #fff2f0;
+      }
+      .ws-progress-item.pending {
+        color: #999;
+      }
+      .ws-progress-icon {
+        width: 16px;
+        text-align: center;
+        flex-shrink: 0;
+      }
+      .ws-progress-item.success .ws-progress-icon { color: #52c41a; }
+      .ws-progress-item.error .ws-progress-icon { color: #ff4d4f; }
+      .ws-progress-item.active .ws-progress-icon { color: #07c160; }
+      .ws-progress-name {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .ws-progress-status {
+        font-size: 11px;
+        color: #666;
+        flex-shrink: 0;
+        max-width: 80px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .ws-progress-item.error .ws-progress-status { color: #ff4d4f; }
+    </style>
+    <div class="ws-progress-header">
+      <span class="ws-progress-title">
+        <svg class="ws-spinning" width="14" height="14" viewBox="0 0 24 24" fill="#07c160">
+          <path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/>
+        </svg>
+        同步中
+      </span>
+      <span class="ws-progress-count">${completedCount}/${totalCount}</span>
+    </div>
+    <div class="ws-progress-list">
+      ${progressHtml}
+    </div>
+    <button class="ws-btn ws-btn-secondary" id="ws-cancel" style="margin-top: 10px; font-size: 12px; padding: 6px 16px;">取消</button>
+  `
+
+  document.getElementById('ws-cancel')?.addEventListener('click', () => {
+    state.results = []
+    state.platformProgress.clear()
+    renderView('platforms')
+  })
+}
+
+// 更新同步进度
+function updateSyncProgress(progress: PlatformProgress) {
+  state.platformProgress.set(progress.platform, progress)
+  // 如果当前是 syncing 视图，更新显示
+  if (state.view === 'syncing') {
+    renderSyncingView()
+  }
 }
 
 function renderResults() {
@@ -670,6 +838,10 @@ async function startSync() {
   }
 
   await chrome.storage.local.set({ lastSelectedPlatforms: state.selectedPlatforms })
+
+  // 清除之前的进度状态
+  state.results = []
+  state.platformProgress.clear()
 
   renderView('syncing')
 
@@ -852,6 +1024,26 @@ async function fetchArticleByApi(appmsgid: string): Promise<any | null> {
     return null
   }
 }
+
+// 监听来自 background 的进度消息
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.type === 'SYNC_DETAIL_PROGRESS') {
+    const progress = message.payload
+    if (progress?.platform) {
+      updateSyncProgress(progress)
+    }
+  }
+  if (message.type === 'SYNC_PROGRESS') {
+    // 单个平台完成，添加到结果
+    const result = message.payload?.result
+    if (result) {
+      state.results.push(result)
+      if (state.view === 'syncing') {
+        renderSyncingView()
+      }
+    }
+  }
+})
 
 // 初始化
 function init() {
