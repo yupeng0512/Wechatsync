@@ -6,6 +6,7 @@
 export interface RequestMessage {
   id: string
   method: string
+  token?: string  // 安全验证 token
   params?: Record<string, unknown>
 }
 

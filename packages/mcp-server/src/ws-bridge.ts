@@ -21,7 +21,16 @@ export class ExtensionBridge {
   }>()
   private requestTimeout = 30000 // 30 seconds
 
-  constructor(private port: number = 9527) {}
+  // 安全验证 token（从环境变量读取）
+  private token: string = process.env.MCP_TOKEN || ''
+
+  constructor(private port: number = 9527) {
+    if (this.token) {
+      console.error('[Bridge] Token authentication enabled')
+    } else {
+      console.error('[Bridge] Warning: MCP_TOKEN not set, requests may be rejected by extension')
+    }
+  }
 
   /**
    * 启动服务 - 自动选择服务器模式或客户端模式
@@ -234,7 +243,12 @@ export class ExtensionBridge {
     }
 
     const id = this.generateId()
-    const message: RequestMessage = { id, method, params }
+    const message: RequestMessage = {
+      id,
+      method,
+      token: this.token,  // 发送 token 供插件端验证
+      params
+    }
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {

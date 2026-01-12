@@ -21,20 +21,26 @@ yarn build:mcp
 
 ## 配置 Claude Code
 
-在 `~/.claude/claude_code_config.json` 中添加：
+在 `~/.claude.json` 中添加：
 
 ```json
 {
   "mcpServers": {
     "wechatsync": {
+      "type": "stdio",
       "command": "node",
-      "args": ["/path/to/sync-assistant/packages/mcp-server/dist/index.js"]
+      "args": ["/path/to/Wechatsync/packages/mcp-server/dist/index.js"],
+      "env": {
+        "MCP_TOKEN": "your-secret-token-here"
+      }
     }
   }
 }
 ```
 
-或者在项目的 `.claude/settings.json` 中配置。
+**重要**: `MCP_TOKEN` 必须与 Chrome 扩展中设置的 token 一致，否则请求会被拒绝。
+
+或者在项目的 `.mcp.json` 中配置。
 
 ## 可用 Tools
 
@@ -63,19 +69,32 @@ yarn build:mcp
 ```
 参数:
 - platforms: string[] (必需) - 目标平台 ID 列表
-- title: string (必需) - 文章标题
-- content: string (必需) - 文章内容（HTML 格式）
-- markdown: string (可选) - 文章内容（Markdown 格式）
-- cover: string (可选) - 封面图 URL
+- title: string (必需) - 文章标题（纯文本，不含 # 号）
+- markdown: string (必需) - 文章正文内容（Markdown 格式，推荐）
+- content: string (可选) - 文章内容（HTML 格式，如提供 markdown 则可忽略）
+- cover: string (可选) - 封面图 URL 或 base64 data URI
 ```
 
 ### extract_article
 
 从当前浏览器页面提取文章内容。
 
+### upload_image
+
+上传图片到图床平台，返回可公开访问的 URL。
+
+```
+参数:
+- imageData: string (必需) - 图片的 base64 数据（不含 data: 前缀）
+- mimeType: string (必需) - 图片 MIME 类型，如 image/png, image/jpeg
+- platform: string (可选) - 上传到哪个平台作为图床，默认 weibo
+```
+
 ## 环境变量
 
-- `WECHATSYNC_WS_PORT`: WebSocket 端口（默认 9527）
+- `MCP_TOKEN`: 安全验证 token（必需，需与 Chrome 扩展中设置的 token 一致）
+- `SYNC_WS_PORT`: WebSocket 端口（默认 9527）
+- `SYNC_HTTP_PORT`: HTTP 端口（默认 9528，仅 SSE 模式）
 
 ## 开发
 
