@@ -5,6 +5,7 @@ import {
   syncToMultiplePlatforms,
   getAllPlatformMetas,
   cancelSync,
+  getAdapter,
   type SyncDetailProgress,
 } from '../adapters'
 import * as wordpressAdapter from '../adapters/cms/wordpress'
@@ -138,6 +139,8 @@ type MessageAction =
   | { type: 'UPDATE_SYNC_STATUS'; payload: { status: 'syncing' | 'completed' } }
   | { type: 'CANCEL_SYNC' }
   | { type: 'START_SYNC_FROM_EDITOR'; article: any; platforms: string[]; syncId?: string }
+  | { type: 'UPLOAD_IMAGE'; payload: { src: string; platform?: string } }
+  | { type: 'MAGIC_CALL'; payload: { methodName: string; data: any } }
 
 /**
  * 消息处理
@@ -839,6 +842,79 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
       }
 
       return { results: allResults, rateLimitWarning, syncId }
+    }
+
+    case 'UPLOAD_IMAGE': {
+      const { src, platform = 'weibo' } = message.payload
+
+      try {
+        // 获取适配器
+        const adapter = await getAdapter(platform)
+        if (!adapter) {
+          return { error: `Platform not found: ${platform}` }
+        }
+
+        // 检查适配器是否支持图片上传
+        if (typeof adapter.uploadImage !== 'function') {
+          return { error: `Platform ${platform} does not support image upload` }
+        }
+
+        // 处理 base64 或 URL
+        let blob: Blob
+
+        if (src.startsWith('data:')) {
+          // data URI 格式: data:image/png;base64,xxxxx
+          const matches = src.match(/^data:([^;]+);base64,(.+)$/)
+          if (!matches) {
+            return { error: 'Invalid data URI format' }
+          }
+          const mimeType = matches[1]
+          const base64Data = matches[2]
+          const binaryStr = atob(base64Data)
+          const bytes = new Uint8Array(binaryStr.length)
+          for (let i = 0; i < binaryStr.length; i++) {
+            bytes[i] = binaryStr.charCodeAt(i)
+          }
+          blob = new Blob([bytes], { type: mimeType })
+        } else {
+          // URL 格式，需要先获取图片
+          const response = await fetch(src)
+          blob = await response.blob()
+        }
+
+        // 调用适配器上传
+        const url = await adapter.uploadImage(blob)
+        return { result: { url, platform } }
+      } catch (error) {
+        logger.error('Upload image failed:', error)
+        return { error: (error as Error).message }
+      }
+    }
+
+    case 'MAGIC_CALL': {
+      const { methodName, data } = message.payload
+
+      try {
+        // 获取平台适配器
+        const platform = data.account?.type || data.platform || 'weibo'
+        const adapter = await getAdapter(platform)
+
+        if (!adapter) {
+          return { error: `Platform not found: ${platform}` }
+        }
+
+        // 检查方法是否存在
+        if (typeof (adapter as any)[methodName] !== 'function') {
+          return { error: `Method ${methodName} not found on platform ${platform}` }
+        }
+
+        // 调用方法
+        const result = await (adapter as any)[methodName](data)
+        return { result }
+      } catch (error) {
+        logger.error(`Magic call ${methodName} failed:`, error)
+        return { error: (error as Error).message }
+      }
     }
 
     default:

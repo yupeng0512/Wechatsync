@@ -141,7 +141,7 @@ export class WeixinAdapter extends CodeAdapter {
         avatar: this.weixinMeta.avatar,
       }
     } catch (error) {
-      logger.error(' checkAuth error:', error)
+      logger.debug('checkAuth: not logged in -', error)
       return { isAuthenticated: false, error: (error as Error).message }
     }
   }
@@ -170,6 +170,9 @@ export class WeixinAdapter extends CodeAdapter {
       })
 
       content = this.processLatex(content)
+
+      // 移除外部链接（微信不允许非微信域名的链接）
+      content = this.stripExternalLinks(content)
 
       content = await this.processImages(
         content,
@@ -375,6 +378,30 @@ export class WeixinAdapter extends CodeAdapter {
     return juice.inlineContent(wrapped, WEIXIN_CSS)
   }
 
+  /**
+   * 移除外部链接（微信不允许非 mp.weixin.qq.com 域名的链接）
+   * 将 <a href="外部链接">文字</a> 转换为 文字
+   */
+  private stripExternalLinks(content: string): string {
+    // 匹配 <a> 标签，保留微信域名的链接
+    return content.replace(
+      /<a\s+[^>]*href=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi,
+      (match, href, text) => {
+        // 保留微信域名的链接
+        if (href && (
+          href.includes('mp.weixin.qq.com') ||
+          href.includes('weixin.qq.com') ||
+          href.startsWith('#') ||  // 锚点链接
+          href.startsWith('javascript:')  // JS 链接
+        )) {
+          return match
+        }
+        // 外部链接只保留文字
+        return text
+      }
+    )
+  }
+
   private formatError(res: { ret?: number; base_resp?: { ret: number } }): string {
     const ret = res.ret ?? res.base_resp?.ret
 
@@ -394,6 +421,7 @@ export class WeixinAdapter extends CodeAdapter {
       [64505]: '发送预览失败，请稍后再试',
       [64506]: '保存失败，链接不合法',
       [64507]: '内容不能包含外部链接',
+      [64562]: '请勿插入非微信域名的链接',
       [64509]: '正文中不能包含超过3个视频',
       [64515]: '当前素材非最新内容，请重新打开并编辑',
       [64702]: '标题超出64字长度限制',

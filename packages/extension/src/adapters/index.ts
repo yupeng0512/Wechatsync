@@ -143,6 +143,7 @@ export async function checkPlatformAuth(platformId: string) {
 const AUTH_CACHE_KEY = 'authCache'
 const AUTH_CACHE_TTL_AUTHENTICATED = 5 * 60 * 1000 // 已登录：5 分钟缓存
 const AUTH_CACHE_TTL_UNAUTHENTICATED = 30 * 1000 // 未登录：30 秒缓存（用户可能随时登录）
+const AUTH_CHECK_CONCURRENCY = 5 // 并行检查数量
 
 interface AuthCacheItem {
   isAuthenticated: boolean
@@ -182,7 +183,7 @@ export async function clearAuthCache(): Promise<void> {
 }
 
 /**
- * 检查所有平台登录状态（带缓存）
+ * 检查所有平台登录状态（带缓存，并行检查）
  */
 export async function checkAllPlatformsAuth(forceRefresh = false) {
   await initAdapters()
@@ -190,12 +191,13 @@ export async function checkAllPlatformsAuth(forceRefresh = false) {
   const metas = adapterRegistry.getAllMeta()
   const cache = await getCachedAuth()
   const now = Date.now()
-  const results = []
+  const results: Array<PlatformMeta & { isAuthenticated: boolean; username?: string; error?: string }> = []
+  const needsCheck: PlatformMeta[] = [] // 需要实际检查的平台
 
   logger.debug(' Checking auth for platforms:', metas.map(m => m.id), forceRefresh ? '(force refresh)' : '')
 
+  // 第一步：分离缓存命中和需要检查的平台
   for (const meta of metas) {
-    // 检查缓存是否有效（未登录用短缓存，已登录用长缓存）
     const cached = cache[meta.id]
     const cacheTTL = cached?.isAuthenticated ? AUTH_CACHE_TTL_AUTHENTICATED : AUTH_CACHE_TTL_UNAUTHENTICATED
     const cacheValid = cached && (now - cached.timestamp < cacheTTL) && !forceRefresh
@@ -208,50 +210,62 @@ export async function checkAllPlatformsAuth(forceRefresh = false) {
         username: cached.username,
         error: cached.error,
       })
-      continue
+    } else {
+      needsCheck.push(meta)
     }
+  }
 
-    // 缓存过期或强制刷新，重新检查
-    try {
-      const adapter = await adapterRegistry.get(meta.id)
-      if (adapter) {
-        logger.debug(` Checking auth for ${meta.id}...`)
-        const auth = await adapter.checkAuth()
-        logger.debug(` ${meta.id} auth result:`, auth)
+  // 第二步：并行检查需要刷新的平台（分批，每批 AUTH_CHECK_CONCURRENCY 个）
+  if (needsCheck.length > 0) {
+    logger.debug(` Need to check ${needsCheck.length} platforms in parallel`)
 
-        // 追踪认证检查
-        trackAuthCheck(meta.id, auth.isAuthenticated).catch(() => {})
+    for (let i = 0; i < needsCheck.length; i += AUTH_CHECK_CONCURRENCY) {
+      const batch = needsCheck.slice(i, i + AUTH_CHECK_CONCURRENCY)
+      const batchResults = await Promise.all(batch.map(async (meta) => {
+        try {
+          const adapter = await adapterRegistry.get(meta.id)
+          if (adapter) {
+            logger.debug(` Checking auth for ${meta.id}...`)
+            const auth = await adapter.checkAuth()
+            logger.debug(` ${meta.id} auth result:`, auth)
 
-        // 更新缓存
-        cache[meta.id] = {
-          isAuthenticated: auth.isAuthenticated,
-          username: auth.username,
-          error: auth.error,
-          timestamp: now,
+            // 追踪认证检查
+            trackAuthCheck(meta.id, auth.isAuthenticated).catch(() => {})
+
+            // 更新缓存
+            cache[meta.id] = {
+              isAuthenticated: auth.isAuthenticated,
+              username: auth.username,
+              error: auth.error,
+              timestamp: now,
+            }
+
+            return {
+              ...meta,
+              isAuthenticated: auth.isAuthenticated,
+              username: auth.username,
+              error: auth.error,
+            }
+          }
+          return { ...meta, isAuthenticated: false, error: 'Adapter not found' }
+        } catch (error) {
+          logger.error(`${meta.id} auth error:`, error)
+
+          // 缓存错误状态
+          cache[meta.id] = {
+            isAuthenticated: false,
+            error: (error as Error).message,
+            timestamp: now,
+          }
+
+          return {
+            ...meta,
+            isAuthenticated: false,
+            error: (error as Error).message,
+          }
         }
-
-        results.push({
-          ...meta,
-          isAuthenticated: auth.isAuthenticated,
-          username: auth.username,
-          error: auth.error,
-        })
-      }
-    } catch (error) {
-      logger.error(`${meta.id} auth error:`, error)
-
-      // 缓存错误状态
-      cache[meta.id] = {
-        isAuthenticated: false,
-        error: (error as Error).message,
-        timestamp: now,
-      }
-
-      results.push({
-        ...meta,
-        isAuthenticated: false,
-        error: (error as Error).message,
-      })
+      }))
+      results.push(...batchResults)
     }
   }
 

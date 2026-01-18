@@ -53,8 +53,8 @@ export class OschinaAdapter extends CodeAdapter {
       })
       const html = await response.text()
 
-      // 解析用户信息
-      const userIdMatch = html.match(/data-user-id="(\d+)"/)
+      // 解析用户信息 - 匹配 current-user-avatar 元素
+      const userIdMatch = html.match(/current-user-avatar[^>]*data-user-id="(\d+)"/)
       const avatarMatch = html.match(/current-user-avatar[^>]*>[\s\S]*?<img[^>]*src="([^"]+)"/)
       const nicknameMatch = html.match(/current-user-avatar[^>]*title="([^"]+)"/)
 

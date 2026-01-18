@@ -19,6 +19,7 @@ export class WoshipmAdapter extends CodeAdapter {
   }
 
   private headerRuleIds: string[] = []
+  private jltoken: string = ''
 
   /**
    * 设置动态请求头规则
@@ -47,6 +48,16 @@ export class WoshipmAdapter extends CodeAdapter {
     })
     this.headerRuleIds.push(ruleId2)
 
+    // woshipm.com/tensorflow/upyun/upload (图片上传)
+    const ruleId3 = await this.runtime.headerRules.add({
+      urlFilter: '*://woshipm.com/tensorflow/upyun/upload*',
+      headers: {
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+      resourceTypes: ['xmlhttprequest'],
+    })
+    this.headerRuleIds.push(ruleId3)
+
     logger.debug('Header rules added:', this.headerRuleIds)
   }
 
@@ -71,6 +82,13 @@ export class WoshipmAdapter extends CodeAdapter {
       })
 
       const pageText = await pageResponse.text()
+
+      // 从页面提取 jltoken: "jltoken":"xxx"
+      const jltokenMatch = pageText.match(/"jltoken"\s*:\s*"([^"]+)"/)
+      if (jltokenMatch) {
+        this.jltoken = jltokenMatch[1]
+        logger.debug('Found jltoken')
+      }
 
       // 从页面提取 uid: var userSettings = {"url":"\/","uid":"1585",...}
       const uidMatch = pageText.match(/var\s+userSettings\s*=\s*\{[^}]*"uid"\s*:\s*"(\d+)"/)
@@ -114,7 +132,7 @@ export class WoshipmAdapter extends CodeAdapter {
 
       return { isAuthenticated: false }
     } catch (error) {
-      logger.error('checkAuth error:', error)
+      logger.debug('checkAuth: not logged in -', error)
       return { isAuthenticated: false, error: (error as Error).message }
     }
   }
@@ -222,8 +240,10 @@ export class WoshipmAdapter extends CodeAdapter {
    */
   protected async uploadImageByUrl(src: string): Promise<ImageUploadResult> {
     try {
-      // 1. 下载图片
-      const imageResponse = await fetch(src)
+      // 1. 下载图片（使用 runtime.fetch 以支持跨域）
+      const imageResponse = await this.runtime.fetch(src, {
+        credentials: 'omit',
+      })
       if (!imageResponse.ok) {
         throw new Error(`Failed to fetch image: ${imageResponse.status}`)
       }
@@ -248,9 +268,18 @@ export class WoshipmAdapter extends CodeAdapter {
     formData.append('name', filename)
     formData.append('files', file, filename)
 
+    const headers: Record<string, string> = {
+      'Origin': 'https://www.woshipm.com',
+      'Referer': 'https://www.woshipm.com/writing',
+    }
+    if (this.jltoken) {
+      headers['jlstar'] = `Bearer ${this.jltoken}`
+    }
+
     const response = await this.runtime.fetch('https://www.woshipm.com/tensorflow/upyun/upload', {
       method: 'POST',
       credentials: 'include',
+      headers,
       body: formData,
     })
 

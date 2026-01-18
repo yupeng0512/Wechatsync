@@ -30,3 +30,4 @@ packages/*/src/**/*.d.ts.map
 # Lock files (use pnpm)
 package-lock.json
 yarn-error.log
+CLAUDE.md

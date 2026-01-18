@@ -182,8 +182,8 @@ export async function uploadImage(
       bits: imageData,
     }
 
-    const body = buildXmlRpcRequest('metaWeblog.newMediaObject', [
-      '1', // blogId
+    const body = buildXmlRpcRequest('wp.uploadFile', [
+      0, // blogId
       credentials.username,
       credentials.password,
       mediaObject,
@@ -473,7 +473,7 @@ export async function publish(
     }
 
     const body = buildXmlRpcRequest('metaWeblog.newPost', [
-      '1', // blogId
+      '0', // blogId
       credentials.username,
       credentials.password,
       post,
@@ -512,15 +512,100 @@ export async function publish(
 }
 
 /**
+ * Typecho 专用上传图片
+ */
+export async function uploadTypechoImage(
+  credentials: MetaWeblogCredentials,
+  imageData: Uint8Array,
+  filename: string,
+  mimeType: string
+): Promise<{ success: boolean; url?: string; error?: string }> {
+  const endpoint = credentials.url.replace(/\/$/, '') + '/action/xmlrpc'
+
+  try {
+    // Typecho 使用 wp.uploadFile，参数用 bytes 而不是 bits
+    const mediaObject = {
+      name: filename,
+      type: mimeType,
+      bytes: imageData,
+    }
+
+    const body = buildXmlRpcRequest('wp.uploadFile', [
+      0, // blogId
+      credentials.username,
+      credentials.password,
+      mediaObject,
+    ])
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/xml',
+      },
+      body,
+    })
+
+    if (!response.ok) {
+      return { success: false, error: `HTTP ${response.status}` }
+    }
+
+    const xml = await response.text()
+
+    // 解析上传结果，提取 URL
+    const urlMatch = xml.match(/<name>url<\/name>\s*<value>(?:<string>)?([^<]+)(?:<\/string>)?<\/value>/)
+    if (urlMatch) {
+      return { success: true, url: urlMatch[1] }
+    }
+
+    // 检查错误
+    if (xml.includes('<fault>')) {
+      const faultMatch = xml.match(/<string>([^<]+)<\/string>/)
+      return { success: false, error: faultMatch?.[1] || 'Upload failed' }
+    }
+
+    return { success: false, error: '无法解析上传结果' }
+  } catch (error) {
+    return { success: false, error: (error as Error).message }
+  }
+}
+
+/**
  * Typecho 专用测试连接
  */
 export async function testTypechoConnection(credentials: MetaWeblogCredentials): Promise<{ success: boolean; error?: string }> {
   // Typecho 默认使用 /action/xmlrpc 端点
-  const typechoCredentials = {
-    ...credentials,
-    endpoint: credentials.url.replace(/\/$/, '') + '/action/xmlrpc',
+  const endpoint = credentials.url.replace(/\/$/, '') + '/action/xmlrpc'
+
+  try {
+    // 使用 wp.getUsersBlogs 测试连接（和旧版保持一致）
+    const body = buildXmlRpcRequest('wp.getUsersBlogs', [
+      credentials.username,
+      credentials.password,
+    ])
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/xml',
+      },
+      body,
+    })
+
+    if (!response.ok) {
+      return { success: false, error: `HTTP ${response.status}` }
+    }
+
+    const xml = await response.text()
+    const result = parseXmlRpcResponse(xml)
+
+    if (!result.success) {
+      return { success: false, error: result.error }
+    }
+
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: (error as Error).message }
   }
-  return testConnection(typechoCredentials)
 }
 
 /**
@@ -529,11 +614,58 @@ export async function testTypechoConnection(credentials: MetaWeblogCredentials):
 export async function publishToTypecho(
   credentials: MetaWeblogCredentials,
   article: { title: string; content: string },
-  options?: { draftOnly?: boolean; processImages?: boolean; onImageProgress?: (current: number, total: number) => void }
+  options?: { draftOnly?: boolean; processImages?: boolean; onImageProgress?: (current: number, total: number) => void; signal?: AbortSignal }
 ): Promise<{ success: boolean; postId?: string; postUrl?: string; error?: string }> {
-  const typechoCredentials = {
-    ...credentials,
-    endpoint: credentials.url.replace(/\/$/, '') + '/action/xmlrpc',
+  const endpoint = credentials.url.replace(/\/$/, '') + '/action/xmlrpc'
+
+  try {
+    // 如果启用图片处理，先处理文章中的图片
+    let content = article.content
+    if (options?.processImages !== false) {
+      logger.debug(' Processing images before publish...')
+      content = await processArticleImages(credentials, content, options?.onImageProgress, options?.signal)
+    }
+
+    // Typecho 使用 metaWeblog.newPost，参数格式和旧版保持一致
+    const post = {
+      title: article.title,
+      description: content.trim(),
+    }
+
+    // 参数顺序：[blogId, username, password, post, publish]
+    const body = buildXmlRpcRequest('metaWeblog.newPost', [
+      0, // blogId (数字 0，和旧版一致)
+      credentials.username,
+      credentials.password,
+      post,
+      false, // publish flag，旧版固定为 false
+    ])
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/xml',
+      },
+      body,
+    })
+
+    if (!response.ok) {
+      return { success: false, error: `HTTP ${response.status}` }
+    }
+
+    const xml = await response.text()
+    const result = parseXmlRpcResponse(xml)
+
+    if (!result.success) {
+      return { success: false, error: result.error }
+    }
+
+    const postId = String(result.value)
+    const baseUrl = credentials.url.replace(/\/$/, '')
+    const postUrl = `${baseUrl}?p=${postId}`
+
+    return { success: true, postId, postUrl }
+  } catch (error) {
+    return { success: false, error: (error as Error).message }
   }
-  return publish(typechoCredentials, article, options)
 }

@@ -197,7 +197,7 @@ function addExtensionRules(turndownService: TurndownService): void {
           language = langMatch[1]
         }
       }
-      const text = pre.textContent || ''
+      const text = (pre as HTMLPreElement).innerText || ''
       return '\n```' + language + '\n' + text + '\n```\n'
     }
   })

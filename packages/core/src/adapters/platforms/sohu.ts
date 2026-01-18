@@ -108,7 +108,7 @@ export class SohuAdapter extends CodeAdapter {
         avatar: this.accountInfo.avatar,
       }
     } catch (error) {
-      logger.error(' checkAuth error:', error)
+      logger.debug('checkAuth: not logged in -', error)
       return { isAuthenticated: false, error: (error as Error).message }
     }
   }

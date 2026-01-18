@@ -71,7 +71,7 @@ export class ToutiaoAdapter extends CodeAdapter {
 
       return { isAuthenticated: false }
     } catch (error) {
-      logger.error('checkAuth error:', error)
+      logger.debug('checkAuth: not logged in -', error)
       return { isAuthenticated: false, error: (error as Error).message }
     }
   }
