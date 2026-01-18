@@ -158,22 +158,13 @@ export class SegmentfaultAdapter extends CodeAdapter {
       throw new Error('图片上传失败: ' + text)
     }
 
-    // FIXED_2024_SEGMENTFAULT_NEW_FORMAT
-    // 新版返回格式: { url: "/img/xxx", result: "https://image-static.segmentfault.com/xxx" }
+    // 新版返回格式: { url: "/img/xxx", result: "https://..." }
     // 旧版返回格式: [0, url, id] 或 [1, error_message]
-    if (res.result) {
-      return { url: res.result }
+    const imageUrl = res.result || (Array.isArray(res) ? (res[0] === 1 ? null : res[1] || `https://image-static.segmentfault.com/${res[2]}`) : null)
+    if (!imageUrl) {
+      throw new Error(Array.isArray(res) ? (res[1] || '图片上传失败') : '图片上传失败')
     }
-
-    if (Array.isArray(res)) {
-      if (res[0] === 1) {
-        throw new Error(res[1] || '图片上传失败')
-      }
-      const imageUrl = res[1] || `https://image-static.segmentfault.com/${res[2]}`
-      return { url: imageUrl }
-    }
-
-    throw new Error('图片上传失败: 未知响应格式')
+    return { url: imageUrl }
   }
 
   /**
