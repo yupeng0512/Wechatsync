@@ -45,6 +45,8 @@ import {
   ImoocAdapter,
   OschinaAdapter,
   SegmentfaultAdapter,
+  XAdapter,
+  XiaohongshuAdapter,
 } from '@wechatsync/core'
 
 // 所有适配器类列表
@@ -70,6 +72,8 @@ const ADAPTER_CLASSES = [
   ImoocAdapter,
   OschinaAdapter,
   SegmentfaultAdapter,
+  XAdapter,
+  XiaohongshuAdapter,
 ] as const
 
 // 适配器注册条目 (类型安全)
@@ -128,6 +132,35 @@ export function getAllPlatformMetas() {
   return adapterRegistry.getAllMeta()
 }
 
+// 缓存配置
+const AUTH_CACHE_KEY = 'authCache'
+const AUTH_CACHE_TTL_AUTHENTICATED = 5 * 60 * 1000 // 已登录：5 分钟缓存
+const AUTH_CACHE_TTL_UNAUTHENTICATED = 30 * 1000 // 未登录：30 秒缓存（用户可能随时登录）
+const AUTH_CHECK_CONCURRENCY = 5 // 并行检查数量
+const AUTH_CHECK_TIMEOUT = 10 * 1000 // 单个平台认证检查超时：10 秒
+const PUBLISH_TIMEOUT = 10 * 60 * 1000 // 单个平台发布超时：10 分钟（包含图片上传）
+
+/**
+ * 带超时的 Promise 包装
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, errorMessage: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(errorMessage))
+    }, ms)
+
+    promise
+      .then(result => {
+        clearTimeout(timer)
+        resolve(result)
+      })
+      .catch(error => {
+        clearTimeout(timer)
+        reject(error)
+      })
+  })
+}
+
 /**
  * 检查平台登录状态
  */
@@ -136,14 +169,16 @@ export async function checkPlatformAuth(platformId: string) {
   if (!adapter) {
     return { isAuthenticated: false, error: 'Platform not found' }
   }
-  return adapter.checkAuth()
+  try {
+    return await withTimeout(
+      adapter.checkAuth(),
+      AUTH_CHECK_TIMEOUT,
+      `认证检查超时（${AUTH_CHECK_TIMEOUT / 1000}秒）`
+    )
+  } catch (error) {
+    return { isAuthenticated: false, error: (error as Error).message }
+  }
 }
-
-// 缓存配置
-const AUTH_CACHE_KEY = 'authCache'
-const AUTH_CACHE_TTL_AUTHENTICATED = 5 * 60 * 1000 // 已登录：5 分钟缓存
-const AUTH_CACHE_TTL_UNAUTHENTICATED = 30 * 1000 // 未登录：30 秒缓存（用户可能随时登录）
-const AUTH_CHECK_CONCURRENCY = 5 // 并行检查数量
 
 interface AuthCacheItem {
   isAuthenticated: boolean
@@ -226,7 +261,11 @@ export async function checkAllPlatformsAuth(forceRefresh = false) {
           const adapter = await adapterRegistry.get(meta.id)
           if (adapter) {
             logger.debug(` Checking auth for ${meta.id}...`)
-            const auth = await adapter.checkAuth()
+            const auth = await withTimeout(
+              adapter.checkAuth(),
+              AUTH_CHECK_TIMEOUT,
+              `认证检查超时（${AUTH_CHECK_TIMEOUT / 1000}秒）`
+            )
             logger.debug(` ${meta.id} auth result:`, auth)
 
             // 追踪认证检查
@@ -335,13 +374,26 @@ export async function syncToPlatform(
     }
   }
 
-  // 默认只保存草稿
-  return adapter.publish(article, {
-    draftOnly: options?.draftOnly ?? true,
-    onImageProgress: onImageProgress
-      ? (current: number, total: number) => onImageProgress(platformId, current, total)
-      : undefined,
-  })
+  try {
+    // 默认只保存草稿，带超时保护
+    return await withTimeout(
+      adapter.publish(article, {
+        draftOnly: options?.draftOnly ?? true,
+        onImageProgress: onImageProgress
+          ? (current: number, total: number) => onImageProgress(platformId, current, total)
+          : undefined,
+      }),
+      PUBLISH_TIMEOUT,
+      `发布超时（${PUBLISH_TIMEOUT / 60000}分钟）`
+    )
+  } catch (error) {
+    return {
+      platform: platformId,
+      success: false,
+      error: (error as Error).message,
+      timestamp: Date.now(),
+    }
+  }
 }
 
 // 并发数量限制

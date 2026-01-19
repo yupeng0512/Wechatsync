@@ -2,6 +2,40 @@
 
 ## v2.0.3
 
+### 🌐 新增平台
+
+**小红书 (Xiaohongshu)**
+- 支持长文笔记草稿同步
+- ProseMirror JSON 格式输出（专为小红书编辑器优化）
+- 图片自动上传并获取签名 URL（`x-ros-preview-url`）
+- 图片尺寸自动获取（`createImageBitmap`）+ 显示优化（宽度 410px，按比例缩放）
+- 同步完成后 Toast 提示（引导用户去草稿箱 → 长文笔记查看）
+- 字数限制 10000 字
+
+**X (Twitter)**
+- 基础适配器
+
+### 🔧 稳定性增强
+
+**超时保护机制**
+| 操作 | 超时时间 |
+|-----|---------|
+| `checkAuth` 认证检查 | 10 秒 |
+| `publish` 发布操作 | 10 分钟 |
+| `runtime.fetch` HTTP 请求 | 30 秒 |
+| `tabs.waitForLoad` 页面加载 | 30 秒 |
+
+- 防止 API 卡死导致 UI 无响应
+- 超时后返回友好错误提示
+
+### 🆕 内容转换系统
+
+**新增 `packages/core/src/content/` 模块**
+- 基于 unified/rehype/remark 生态
+- 支持 ProseMirror JSON 输出（小红书专用）
+- 平台能力配置化（`capabilities.ts`）
+- 可扩展的转换管道
+
 ### 🔧 核心修复
 
 **同步 API 恢复**
@@ -14,7 +48,7 @@
 **平台适配器修复**
 - 开源中国 - 登录状态检测
 - 人人都是产品经理 - 图片上传
-- Typecho 
+- Typecho
 
 ### 📝 文档
 - ROADMAP 添加用户需求平台排名（基于 527 条反馈）

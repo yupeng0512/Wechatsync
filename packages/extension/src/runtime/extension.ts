@@ -4,6 +4,9 @@ import type { Cookie, HeaderRule } from '@wechatsync/core'
 /**
  * Chrome 扩展运行时实现
  */
+// 默认请求超时：30 秒
+const DEFAULT_FETCH_TIMEOUT = 30 * 1000
+
 export class ExtensionRuntime implements RuntimeInterface {
   readonly type = 'extension' as const
   // 使用时间戳+随机数避免规则 ID 冲突（扩展重载或并发场景）
@@ -13,14 +16,28 @@ export class ExtensionRuntime implements RuntimeInterface {
   constructor(private config?: RuntimeConfig) {}
 
   /**
-   * HTTP 请求 - 自动携带 cookies
+   * HTTP 请求 - 自动携带 cookies，带超时保护
    */
   async fetch(url: string, options?: RequestInit): Promise<Response> {
-    const response = await fetch(url, {
-      ...options,
-      credentials: 'include',
-    })
-    return response
+    const timeout = this.config?.timeout ?? DEFAULT_FETCH_TIMEOUT
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), timeout)
+
+    try {
+      const response = await fetch(url, {
+        ...options,
+        credentials: 'include',
+        signal: controller.signal,
+      })
+      return response
+    } catch (error) {
+      if ((error as Error).name === 'AbortError') {
+        throw new Error(`请求超时（${timeout / 1000}秒）: ${url}`)
+      }
+      throw error
+    } finally {
+      clearTimeout(timeoutId)
+    }
   }
 
   /**

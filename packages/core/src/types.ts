@@ -29,6 +29,7 @@ export interface SyncResult {
   postUrl?: string
   draftOnly?: boolean  // 是否只保存了草稿
   error?: string
+  message?: string  // 额外提示信息
   timestamp: number
 }
 
