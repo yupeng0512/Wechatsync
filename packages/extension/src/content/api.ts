@@ -189,7 +189,6 @@ window.addEventListener('message', async (evt) => {
         if (chrome.runtime.lastError) {
           console.error('[Wechatsync] addTask error:', chrome.runtime.lastError);
         }
-        console.log('addTask return', resp);
       });
     }
 
@@ -259,7 +258,6 @@ function injectAPI() {
     script.src = chrome.runtime.getURL('inject-api.js');
     script.onload = function() {
       script.remove();
-      console.log('injject');
     };
     (document.head || document.documentElement).appendChild(script);
   }, 50);
