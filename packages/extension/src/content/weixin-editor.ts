@@ -3,6 +3,7 @@
  * 在编辑页面提供同步面板（可拖动、可收起）
  */
 import { createLogger } from '../lib/logger'
+import { htmlToMarkdownNative } from '@wechatsync/core'
 
 const logger = createLogger('WeixinEditor')
 
@@ -985,7 +986,8 @@ async function extractArticle(): Promise<any | null> {
     }
 
     logger.debug('Extracted:', { title, contentLen: content.length, hasCover: !!cover })
-    return { title, html: content, content, summary, cover, source: { url: window.location.href, platform: 'weixin-editor' } }
+    const markdown = htmlToMarkdownNative(content)
+    return { title, html: content, content, markdown, summary, cover, source: { url: window.location.href, platform: 'weixin-editor' } }
   } catch (error) {
     logger.error('Extract failed:', error)
     return null
@@ -1024,7 +1026,9 @@ async function fetchArticleByApi(appmsgid: string): Promise<any | null> {
       if (src && !src.startsWith('data:')) img.src = src
     })
 
-    return { title, html: contentEl.innerHTML, content: contentEl.innerHTML, summary, cover, source: { url: tempData.temp_url, platform: 'weixin' } }
+    const htmlContent = contentEl.innerHTML
+    const markdown = htmlToMarkdownNative(htmlContent)
+    return { title, html: htmlContent, content: htmlContent, markdown, summary, cover, source: { url: tempData.temp_url, platform: 'weixin' } }
   } catch (error) {
     logger.error('API fetch failed:', error)
     return null

@@ -12,6 +12,8 @@
  * 注入脚本位于 public/inject-api.js（Manifest V3 不支持内联脚本）
  */
 
+import { htmlToMarkdownNative } from '@wechatsync/core'
+
 // 敏感 API 白名单（仅 updateDriver 和 startInspect 需要检查）
 const SENSITIVE_API_WHITELIST = [
   'https://www.wechatsync.com',
@@ -21,6 +23,23 @@ const SENSITIVE_API_WHITELIST = [
 
 // 当前同步任务 ID（用于过滤消息）
 let currentSyncId: string | null = null;
+
+// 当前同步任务的账户状态（兼容旧版 API）
+interface AccountStatus {
+  type: string;
+  title: string;
+  displayName?: string;
+  icon?: string;
+  avatar?: string;
+  uid?: string;
+  home?: string;
+  supportTypes?: string[];
+  status: 'pending' | 'uploading' | 'done' | 'failed';
+  msg?: string;
+  error?: string;
+  editResp?: { draftLink?: string } | null;
+}
+let currentAccounts: AccountStatus[] = [];
 
 /**
  * 发送消息到页面
@@ -78,40 +97,42 @@ chrome.runtime.onMessage.addListener((message, _sender, _sendResponse) => {
       return;
     }
 
-    // 新版同步进度更新 -> 转换为旧版格式
+    // 新版同步进度更新 -> 转换为旧版格式（更新对应账户状态）
     if (message.type === 'SYNC_PROGRESS') {
       const result = message.result || message.payload?.result;
       if (result) {
-        sendTaskUpdate({
-          accounts: [{
-            type: result.platform,
-            title: result.platformName || result.platform,
-            status: result.success ? 'done' : 'failed',
-            error: result.error,
-            editResp: result.success ? { draftLink: result.url } : null,
-          }],
-        });
+        // 更新对应账户的状态
+        const account = currentAccounts.find(a => a.type === result.platform);
+        if (account) {
+          account.status = result.success ? 'done' : 'failed';
+          account.error = result.error;
+          account.msg = undefined;
+          account.editResp = result.success ? { draftLink: result.postUrl || result.url } : null;
+        }
+        // 发送完整的账户状态列表
+        sendTaskUpdate({ accounts: currentAccounts });
       }
     }
 
-    // 新版详细进度更新 -> 转换为旧版格式
+    // 新版详细进度更新 -> 转换为旧版格式（更新对应账户状态）
     if (message.type === 'SYNC_DETAIL_PROGRESS') {
       const progress = message.payload || message;
-      sendTaskUpdate({
-        accounts: [{
-          type: progress.platform,
-          title: progress.platformName || progress.platform,
-          status: 'uploading',
-          msg: progress.stage === 'uploading_images'
-            ? `上传图片 ${progress.imageProgress?.current}/${progress.imageProgress?.total}`
-            : progress.stage,
-        }],
-      });
+      // 更新对应账户的状态
+      const account = currentAccounts.find(a => a.type === progress.platform);
+      if (account) {
+        account.status = 'uploading';
+        account.msg = progress.stage === 'uploading_images'
+          ? `上传图片 ${progress.imageProgress?.current}/${progress.imageProgress?.total}`
+          : progress.stage === 'saving' ? '保存中...' : progress.stage;
+      }
+      // 发送完整的账户状态列表
+      sendTaskUpdate({ accounts: currentAccounts });
     }
 
     // 同步完成
     if (message.type === 'SYNC_COMPLETE') {
       currentSyncId = null;
+      currentAccounts = [];
     }
   } catch (e) {
     console.error('[Wechatsync] Error handling message:', e);
@@ -162,23 +183,37 @@ window.addEventListener('message', async (evt) => {
       // 生成 syncId 用于追踪进度
       currentSyncId = `sync_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
+      // 初始化账户状态（保留原始账户信息：icon、title 等）
+      currentAccounts = accounts.map((a: any) => ({
+        type: a.type,
+        title: a.title,
+        displayName: a.displayName,
+        icon: a.icon,
+        avatar: a.avatar,
+        uid: a.uid,
+        home: a.home,
+        supportTypes: a.supportTypes,
+        status: 'uploading' as const,
+        msg: '准备同步...',
+        error: undefined,
+        editResp: null,
+      }));
+
       // 立即发送初始状态
-      sendTaskUpdate({
-        accounts: accounts.map((a: any) => ({
-          ...a,
-          status: 'uploading',
-          msg: '准备同步...',
-        })),
-      });
+      sendTaskUpdate({ accounts: currentAccounts });
+
+      // 如果没有 markdown 但有 content，自动转换
+      const htmlContent = post.content || '';
+      const markdown = post.markdown || (htmlContent ? htmlToMarkdownNative(htmlContent) : '');
 
       chrome.runtime.sendMessage({
         type: 'SYNC_ARTICLE',
         payload: {
           article: {
             title: post.title,
-            content: post.content,
-            html: post.content,
-            markdown: post.markdown,
+            content: htmlContent,
+            html: htmlContent,
+            markdown,
             cover: post.thumb,
           },
           platforms,

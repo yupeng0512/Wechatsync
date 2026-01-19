@@ -3,6 +3,8 @@
  * 优化的同步按钮体验
  */
 
+import { htmlToMarkdownNative } from '@wechatsync/core'
+
 ;(() => {
 interface Platform {
   id: string
@@ -871,10 +873,15 @@ function extractWeixinArticle() {
   const clonedContent = contentEl.cloneNode(true) as HTMLElement
   processLazyImages(clonedContent)
 
+  // 转换 HTML 为 Markdown（用于 markdown 优先的平台）
+  const htmlContent = clonedContent.innerHTML
+  const markdown = htmlToMarkdownNative(htmlContent)
+
   return {
     title,
-    html: clonedContent.innerHTML,
-    content: clonedContent.innerHTML,
+    html: htmlContent,
+    content: htmlContent,
+    markdown,
     summary: summary || undefined,
     cover: cover || undefined,
     source: {
