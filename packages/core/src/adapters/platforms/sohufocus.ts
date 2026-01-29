@@ -13,6 +13,11 @@ export class SohuFocusAdapter extends CodeAdapter {
     capabilities: ['article', 'draft', 'image_upload'],
   }
 
+  /** 预处理配置: 搜狐焦点使用 HTML 格式 */
+  readonly preprocessConfig = {
+    outputFormat: 'html' as const,
+  }
+
   /**
    * 检查登录状态
    */

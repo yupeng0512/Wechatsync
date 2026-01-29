@@ -4,7 +4,7 @@
 import { CodeAdapter, type ImageUploadResult } from '../code-adapter'
 import type { Article, AuthResult, SyncResult, PlatformMeta } from '../../types'
 import type { PublishOptions } from '../types'
-import { htmlToMarkdown, signAWS4, crc32 } from '../../lib'
+import { signAWS4, crc32 } from '../../lib'
 import { createLogger } from '../../lib/logger'
 
 const logger = createLogger('Juejin')
@@ -102,55 +102,35 @@ export class JuejinAdapter extends CodeAdapter {
     capabilities: ['article', 'draft', 'image_upload', 'categories', 'tags', 'cover'],
   }
 
+  /** 预处理配置: 掘金使用 Markdown 格式 */
+  readonly preprocessConfig = {
+    outputFormat: 'markdown' as const,
+  }
+
   private cachedCsrfToken: string | null = null
   private cachedImageXToken: ImageXToken | null = null
   private imageXTokenExpiry: number = 0
   private uuid: string = generateUUID()
-  private headerRuleIds: string[] = []
 
-  /**
-   * 设置动态请求头规则
-   */
-  private async setupHeaderRules(): Promise<void> {
-    if (this.headerRuleIds.length > 0) return
-    if (!this.runtime.headerRules) return
-
-    // 添加 api.juejin.cn 规则
-    const ruleId1 = await this.runtime.headerRules.add({
+  /** 掘金 API 需要的 Header 规则 */
+  private readonly HEADER_RULES = [
+    {
       urlFilter: '*://api.juejin.cn/*',
       headers: {
         'Origin': 'https://juejin.cn',
         'Referer': 'https://juejin.cn/',
       },
       resourceTypes: ['xmlhttprequest'],
-    })
-    this.headerRuleIds.push(ruleId1)
-
-    // 添加 imagex.bytedanceapi.com 规则
-    const ruleId2 = await this.runtime.headerRules.add({
+    },
+    {
       urlFilter: '*://imagex.bytedanceapi.com/*',
       headers: {
         'Origin': 'https://juejin.cn',
         'Referer': 'https://juejin.cn/',
       },
       resourceTypes: ['xmlhttprequest'],
-    })
-    this.headerRuleIds.push(ruleId2)
-
-    logger.debug('Header rules added:', this.headerRuleIds)
-  }
-
-  /**
-   * 清除动态请求头规则
-   */
-  private async clearHeaderRules(): Promise<void> {
-    if (!this.runtime.headerRules) return
-    for (const ruleId of this.headerRuleIds) {
-      await this.runtime.headerRules.remove(ruleId)
-    }
-    this.headerRuleIds = []
-    logger.debug('Header rules cleared')
-  }
+    },
+  ]
 
   async checkAuth(): Promise<AuthResult> {
     try {
@@ -219,29 +199,19 @@ export class JuejinAdapter extends CodeAdapter {
   }
 
   async publish(article: Article, options?: PublishOptions): Promise<SyncResult> {
-    // 设置请求头规则
-    await this.setupHeaderRules()
-
-    try {
+    return this.withHeaderRules(this.HEADER_RULES, async () => {
       logger.info('Starting publish...')
 
       // 1. 获取 CSRF token
       const csrfToken = await this.getCsrfToken()
 
-      // 2. 获取 HTML 内容
-      const rawHtml = article.html || article.markdown
+      // 2. 使用预处理好的 markdown（Content Script 已转换）
+      // 掘金使用 Markdown 格式
+      let markdown = article.markdown || ''
 
-      // 3. 清理 HTML
-      let content = this.cleanHtml(rawHtml, {
-        removeIframes: true,
-        removeSvgImages: true,
-        removeTags: ['mpprofile', 'qqmusic'],
-        removeAttrs: ['data-reader-unique-id'],
-      })
-
-      // 4. 处理图片
-      content = await this.processImages(
-        content,
+      // 3. 处理图片（上传到掘金图床）
+      markdown = await this.processImages(
+        markdown,
         (src) => this.uploadImageByUrl(src),
         {
           skipPatterns: [
@@ -251,9 +221,6 @@ export class JuejinAdapter extends CodeAdapter {
           onProgress: options?.onImageProgress,
         }
       )
-
-      // 5. 转换为 Markdown (掘金使用 Markdown)
-      const markdown = htmlToMarkdown(content)
 
       // 6. 创建草稿 (参数来自 DSL juejin.yaml + juejin.transform.ts prepareBody)
       const createResponse = await this.runtime.fetch(
@@ -308,22 +275,14 @@ export class JuejinAdapter extends CodeAdapter {
 
       const draftUrl = `https://juejin.cn/editor/drafts/${draftId}`
 
-      const result = this.createResult(true, {
+      return this.createResult(true, {
         postId: draftId,
         postUrl: draftUrl,
         draftOnly: options?.draftOnly ?? true,
       })
-
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return result
-    } catch (error) {
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return this.createResult(false, {
-        error: (error as Error).message,
-      })
-    }
+    }).catch((error) => this.createResult(false, {
+      error: (error as Error).message,
+    }))
   }
 
   /**
@@ -331,12 +290,7 @@ export class JuejinAdapter extends CodeAdapter {
    * 需要设置动态请求头规则以支持 MCP 调用
    */
   async uploadImage(file: Blob, _filename?: string): Promise<string> {
-    await this.setupHeaderRules()
-    try {
-      return await this.uploadImageBinaryInternal(file)
-    } finally {
-      await this.clearHeaderRules()
-    }
+    return this.withHeaderRules(this.HEADER_RULES, () => this.uploadImageBinaryInternal(file))
   }
 
   /**

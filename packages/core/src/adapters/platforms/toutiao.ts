@@ -4,7 +4,6 @@
 import { CodeAdapter, type ImageUploadResult } from '../code-adapter'
 import type { Article, AuthResult, SyncResult, PlatformMeta } from '../../types'
 import type { PublishOptions } from '../types'
-import { markdownToHtml } from '../../lib'
 import { createLogger } from '../../lib/logger'
 
 const logger = createLogger('Toutiao')
@@ -18,39 +17,23 @@ export class ToutiaoAdapter extends CodeAdapter {
     capabilities: ['article', 'draft', 'image_upload', 'cover'],
   }
 
-  private headerRuleIds: string[] = []
+  /** 预处理配置: 头条使用 HTML，移除外链 */
+  readonly preprocessConfig = {
+    outputFormat: 'html' as const,
+    removeLinks: true,
+  }
 
-  /**
-   * 设置动态请求头规则 (CORS)
-   */
-  private async setupHeaderRules(): Promise<void> {
-    if (this.headerRuleIds.length > 0) return
-    if (!this.runtime.headerRules) return
-
-    const ruleId = await this.runtime.headerRules.add({
+  /** 头条 API 需要的 Header 规则 */
+  private readonly HEADER_RULES = [
+    {
       urlFilter: '*://mp.toutiao.com/*',
       headers: {
         'Origin': 'https://mp.toutiao.com',
         'Referer': 'https://mp.toutiao.com/profile_v4/graphic/publish',
       },
       resourceTypes: ['xmlhttprequest'],
-    })
-    this.headerRuleIds.push(ruleId)
-
-    logger.debug('Header rules added:', this.headerRuleIds)
-  }
-
-  /**
-   * 清除动态请求头规则
-   */
-  private async clearHeaderRules(): Promise<void> {
-    if (!this.runtime.headerRules) return
-    for (const ruleId of this.headerRuleIds) {
-      await this.runtime.headerRules.remove(ruleId)
-    }
-    this.headerRuleIds = []
-    logger.debug('Header rules cleared')
-  }
+    },
+  ]
 
   async checkAuth(): Promise<AuthResult> {
     try {
@@ -93,29 +76,17 @@ export class ToutiaoAdapter extends CodeAdapter {
   }
 
   async publish(article: Article, options?: PublishOptions): Promise<SyncResult> {
-    // 设置请求头规则
-    await this.setupHeaderRules()
-
-    try {
+    return this.withHeaderRules(this.HEADER_RULES, async () => {
       logger.info('Starting publish...')
 
-      // 1. 获取 HTML 内容
-      const rawHtml = article.html || markdownToHtml(article.markdown)
-
-      // 2. 清理内容
-      let content = this.cleanHtml(rawHtml, {
-        removeLinks: true,
-        removeIframes: true,
-        removeSvgImages: true,
-        removeTags: ['qqmusic'],
-        removeAttrs: ['data-reader-unique-id'],
-      })
-      // 移除空的 figure 标签
+      // Use pre-processed HTML content directly
+      let content = article.html || ''
+      // Remove empty figure tags
       content = content.replace(/<figure[^>]*>\s*<\/figure>/gi, '')
-      // 移除多余的空行
+      // Remove excessive blank lines
       content = content.replace(/\n{3,}/g, '\n\n')
 
-      // 3. 处理图片
+      // Process images
       content = await this.processImages(
         content,
         (src) => this.uploadImageByUrl(src),
@@ -203,22 +174,14 @@ export class ToutiaoAdapter extends CodeAdapter {
       const draftId = res.data.pgc_id
       const draftUrl = `https://mp.toutiao.com/profile_v4/graphic/publish?pgc_id=${draftId}`
 
-      const result = this.createResult(true, {
+      return this.createResult(true, {
         postId: draftId,
         postUrl: draftUrl,
         draftOnly: options?.draftOnly ?? true,
       })
-
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return result
-    } catch (error) {
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return this.createResult(false, {
-        error: (error as Error).message,
-      })
-    }
+    }).catch((error) => this.createResult(false, {
+      error: (error as Error).message,
+    }))
   }
 
   /**

@@ -4,6 +4,7 @@
  */
 import { createLogger } from '../lib/logger'
 import { htmlToMarkdownNative } from '@wechatsync/core'
+import { preprocessContentString } from '../lib/content-processor'
 
 const logger = createLogger('WeixinEditor')
 
@@ -986,8 +987,12 @@ async function extractArticle(): Promise<any | null> {
     }
 
     logger.debug('Extracted:', { title, contentLen: content.length, hasCover: !!cover })
-    const markdown = htmlToMarkdownNative(content)
-    return { title, html: content, content, markdown, summary, cover, source: { url: window.location.href, platform: 'weixin-editor' } }
+
+    // 预处理内容（处理代码块等）
+    const processedContent = preprocessContentString(content)
+
+    const markdown = htmlToMarkdownNative(processedContent)
+    return { title, html: processedContent, content: processedContent, markdown, summary, cover, source: { url: window.location.href, platform: 'weixin-editor' } }
   } catch (error) {
     logger.error('Extract failed:', error)
     return null
@@ -1020,15 +1025,11 @@ async function fetchArticleByApi(appmsgid: string): Promise<any | null> {
 
     if (!title || !contentEl) return null
 
-    // 处理懒加载图片
-    contentEl.querySelectorAll('img').forEach(img => {
-      const src = img.getAttribute('data-src') || img.getAttribute('data-original') || img.src
-      if (src && !src.startsWith('data:')) img.src = src
-    })
+    // 预处理内容（处理代码块、懒加载图片等）
+    const processedContent = preprocessContentString(contentEl.innerHTML)
 
-    const htmlContent = contentEl.innerHTML
-    const markdown = htmlToMarkdownNative(htmlContent)
-    return { title, html: htmlContent, content: htmlContent, markdown, summary, cover, source: { url: tempData.temp_url, platform: 'weixin' } }
+    const markdown = htmlToMarkdownNative(processedContent)
+    return { title, html: processedContent, content: processedContent, markdown, summary, cover, source: { url: tempData.temp_url, platform: 'weixin' } }
   } catch (error) {
     logger.error('API fetch failed:', error)
     return null

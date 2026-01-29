@@ -13,6 +13,9 @@
  */
 
 import { htmlToMarkdownNative } from '@wechatsync/core'
+import { createLogger } from '../lib/logger'
+
+const logger = createLogger('Wechatsync')
 
 // 敏感 API 白名单（仅 updateDriver 和 startInspect 需要检查）
 const SENSITIVE_API_WHITELIST = [
@@ -135,7 +138,7 @@ chrome.runtime.onMessage.addListener((message, _sender, _sendResponse) => {
       currentAccounts = [];
     }
   } catch (e) {
-    console.error('[Wechatsync] Error handling message:', e);
+    logger.error('Error handling message:', e);
   }
 });
 
@@ -151,7 +154,7 @@ window.addEventListener('message', async (evt) => {
     if (action.method === 'getAccounts') {
       chrome.runtime.sendMessage({ type: 'CHECK_ALL_AUTH' }, (resp) => {
         if (chrome.runtime.lastError) {
-          console.error('[Wechatsync] getAccounts error:', chrome.runtime.lastError);
+          logger.error('getAccounts error:', chrome.runtime.lastError);
           sendToWindow({ eventID: action.eventID, result: [] });
           return;
         }
@@ -222,7 +225,7 @@ window.addEventListener('message', async (evt) => {
         },
       }, (resp) => {
         if (chrome.runtime.lastError) {
-          console.error('[Wechatsync] addTask error:', chrome.runtime.lastError);
+          logger.error('addTask error:', chrome.runtime.lastError);
         }
       });
     }
@@ -267,14 +270,14 @@ window.addEventListener('message', async (evt) => {
       // updateDriver - 更新驱动
       if (action.method === 'updateDriver') {
         // v2 版本不再支持动态更新驱动，返回成功但不做任何事
-        console.warn('[Wechatsync] updateDriver is deprecated in v2');
+        logger.warn('updateDriver is deprecated in v2');
         sendToWindow({ eventID: action.eventID, result: { success: true, deprecated: true } });
       }
 
       // startInspect - 开始检查
       if (action.method === 'startInspect') {
         // v2 版本不再支持 inspect 模式，返回成功但不做任何事
-        console.warn('[Wechatsync] startInspect is deprecated in v2');
+        logger.warn('startInspect is deprecated in v2');
         sendToWindow({ eventID: action.eventID, result: { success: true, deprecated: true } });
       }
     }

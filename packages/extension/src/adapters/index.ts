@@ -45,11 +45,13 @@ import {
   ImoocAdapter,
   OschinaAdapter,
   SegmentfaultAdapter,
+  CnblogsAdapter,
 } from '@wechatsync/core'
 
 // 私有适配器 - 通过 glob 动态加载（文件不存在时为空对象，不会报错）
+// 使用 Vite alias @wechatsync/core 确保构建时正确解析
 const privateModules = import.meta.glob<Record<string, unknown>>(
-  ['../../../core/src/adapters/platforms/x.ts', '../../../core/src/adapters/platforms/xiaohongshu.ts'],
+  ['@wechatsync/core/adapters/platforms/x.ts', '@wechatsync/core/adapters/platforms/xiaohongshu.ts'],
   { eager: true }
 )
 
@@ -60,9 +62,18 @@ type AdapterConstructor = new (...args: unknown[]) => PlatformAdapter
 function getPrivateAdapters(): AdapterConstructor[] {
   const adapters: AdapterConstructor[] = []
   for (const mod of Object.values(privateModules)) {
-    for (const exported of Object.values(mod as Record<string, unknown>)) {
-      if (typeof exported === 'function' && (exported as { prototype?: { meta?: unknown } }).prototype?.meta) {
-        adapters.push(exported as AdapterConstructor)
+    for (const [name, exported] of Object.entries(mod as Record<string, unknown>)) {
+      // 检查是否是类（函数）且名称以 Adapter 结尾
+      if (typeof exported === 'function' && name.endsWith('Adapter')) {
+        try {
+          // 尝试实例化检查是否有 meta 属性
+          const instance = new (exported as AdapterConstructor)()
+          if (instance && (instance as unknown as { meta?: unknown }).meta) {
+            adapters.push(exported as AdapterConstructor)
+          }
+        } catch {
+          // 实例化失败，跳过（文件可能不存在或格式不对）
+        }
       }
     }
   }
@@ -92,6 +103,7 @@ const ADAPTER_CLASSES: AdapterConstructor[] = [
   ImoocAdapter,
   OschinaAdapter,
   SegmentfaultAdapter,
+  CnblogsAdapter,
   ...getPrivateAdapters(),
 ]
 
@@ -99,13 +111,18 @@ const ADAPTER_CLASSES: AdapterConstructor[] = [
 interface AdapterEntry {
   meta: PlatformMeta
   factory: () => PlatformAdapter
+  preprocessConfig?: Record<string, unknown>
 }
 
-// 生成适配器注册条目
-const adapterEntries: AdapterEntry[] = ADAPTER_CLASSES.map(AdapterClass => ({
-  meta: new AdapterClass().meta,
-  factory: () => new AdapterClass(),
-}))
+// 生成适配器注册条目（包含 preprocessConfig）
+const adapterEntries: AdapterEntry[] = ADAPTER_CLASSES.map(AdapterClass => {
+  const instance = new AdapterClass()
+  return {
+    meta: instance.meta,
+    factory: () => new AdapterClass(),
+    preprocessConfig: (instance as unknown as { preprocessConfig?: Record<string, unknown> }).preprocessConfig,
+  }
+})
 
 const logger = createLogger('WechatSync')
 
@@ -149,6 +166,20 @@ export async function getAdapter(platformId: string): Promise<PlatformAdapter | 
  */
 export function getAllPlatformMetas() {
   return adapterRegistry.getAllMeta()
+}
+
+/**
+ * 获取平台的预处理配置
+ */
+export function getPlatformPreprocessConfig(platformId: string) {
+  return adapterRegistry.getPreprocessConfig(platformId)
+}
+
+/**
+ * 获取多个平台的预处理配置
+ */
+export function getPlatformPreprocessConfigs(platformIds: string[]) {
+  return adapterRegistry.getPreprocessConfigs(platformIds)
 }
 
 // 缓存配置
@@ -455,7 +486,6 @@ export async function syncToMultiplePlatforms(
 
   const results: SyncResult[] = []
   const startTime = Date.now()
-  let cancelled = false
 
   // 追踪同步开始
   trackSyncStart(source, platformIds).catch(() => {})
@@ -560,7 +590,6 @@ export async function syncToMultiplePlatforms(
   for (let i = 0; i < platformIds.length; i += CONCURRENCY_LIMIT) {
     // 每批前检查是否取消
     if (signal.aborted) {
-      cancelled = true
       // 剩余平台标记为已取消
       const remaining = platformIds.slice(i)
       for (const platformId of remaining) {

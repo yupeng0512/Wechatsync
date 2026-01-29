@@ -10,6 +10,186 @@
  */
 
 import TurndownService from 'turndown'
+import { createLogger } from './logger'
+
+const logger = createLogger('Turndown')
+
+// ============ HTML 实体解码工具 ============
+
+/**
+ * 完整的 HTML 实体解码（用于代码块提取）
+ * 处理：命名实体、十进制实体、十六进制实体、双重编码
+ */
+function decodeHtmlEntities(text: string): string {
+  let result = text
+
+  // 1. 先处理双重编码（如 &amp;lt; → &lt;）
+  // 最多处理 3 层嵌套
+  for (let i = 0; i < 3; i++) {
+    const prev = result
+    result = result.replace(/&amp;/g, '&')
+    if (prev === result) break
+  }
+
+  // 2. 解码十六进制实体 &#xNN; 或 &#XNN;
+  result = result.replace(/&#[xX]([0-9a-fA-F]+);/g, (_, hex) => {
+    return String.fromCharCode(parseInt(hex, 16))
+  })
+
+  // 3. 解码十进制实体 &#NN;
+  result = result.replace(/&#(\d+);/g, (_, dec) => {
+    return String.fromCharCode(parseInt(dec, 10))
+  })
+
+  // 4. 解码常用命名实体
+  const namedEntities: Record<string, string> = {
+    '&lt;': '<',
+    '&gt;': '>',
+    '&amp;': '&',
+    '&quot;': '"',
+    '&apos;': "'",
+    '&#039;': "'",
+    '&nbsp;': ' ',
+    '&ndash;': '\u2013',
+    '&mdash;': '\u2014',
+    '&lsquo;': '\u2018',
+    '&rsquo;': '\u2019',
+    '&ldquo;': '\u201C',
+    '&rdquo;': '\u201D',
+    '&copy;': '\u00A9',
+    '&reg;': '\u00AE',
+    '&trade;': '\u2122',
+    '&hellip;': '\u2026',
+  }
+
+  for (const [entity, char] of Object.entries(namedEntities)) {
+    result = result.split(entity).join(char)
+  }
+
+  return result
+}
+
+/**
+ * 已知的 HTML 标签白名单（可能出现在代码块中的格式化标签）
+ * 只移除这些标签，避免误删代码中的泛型语法如 List<String>
+ */
+const KNOWN_HTML_TAGS = [
+  // 文本格式化
+  'span', 'em', 'strong', 'b', 'i', 'u', 's', 'strike', 'del', 'ins', 'mark',
+  'sub', 'sup', 'small', 'big', 'font', 'a',
+  // 代码相关
+  'code', 'pre', 'kbd', 'samp', 'var', 'tt',
+  // 块级元素
+  'div', 'p', 'section', 'article', 'header', 'footer', 'aside', 'nav',
+  'main', 'figure', 'figcaption', 'blockquote', 'address',
+  // 列表
+  'ul', 'ol', 'li', 'dl', 'dt', 'dd',
+  // 表格
+  'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption', 'colgroup', 'col',
+  // 换行/分隔
+  'br', 'hr', 'wbr',
+  // 其他
+  'abbr', 'acronym', 'cite', 'dfn', 'q', 'time', 'ruby', 'rt', 'rp',
+  'bdi', 'bdo', 'data', 'meter', 'progress', 'output', 'details', 'summary',
+  // 微信特殊标签
+  'mpvoice', 'mpprofile', 'qqmusic', 'mpcps',
+]
+
+/**
+ * 从 HTML 中安全提取代码文本
+ *
+ * 策略：
+ * 1. 先用占位符保护 HTML 实体编码的 < > （如 &lt; &gt;）
+ * 2. 只移除已知的 HTML 标签（白名单），保留代码中的泛型语法
+ * 3. 恢复占位符并解码所有 HTML 实体
+ */
+function extractCodeText(html: string): string {
+  const LT_PLACEHOLDER = '\x00__CODE_LT__\x00'
+  const GT_PLACEHOLDER = '\x00__CODE_GT__\x00'
+
+  let text = html
+
+  // 1. 保护所有表示 < > 的 HTML 实体（它们是代码内容，不是标签）
+  // 命名实体
+  text = text.replace(/&lt;/gi, LT_PLACEHOLDER)
+  text = text.replace(/&gt;/gi, GT_PLACEHOLDER)
+  // 十进制实体 &#60; &#62;
+  text = text.replace(/&#0*60;/gi, LT_PLACEHOLDER)
+  text = text.replace(/&#0*62;/gi, GT_PLACEHOLDER)
+  // 十六进制实体 &#x3C; &#x3E;
+  text = text.replace(/&#x0*3[cC];/gi, LT_PLACEHOLDER)
+  text = text.replace(/&#x0*3[eE];/gi, GT_PLACEHOLDER)
+
+  // 2. 只移除已知的 HTML 标签（白名单方式）
+  // 这样可以保留代码中的泛型语法如 List<String>, Map<K, V> 等
+  const tagPattern = KNOWN_HTML_TAGS.join('|')
+  // 匹配开标签: <tagname ...> 或自闭合 <tagname ... />
+  text = text.replace(new RegExp(`<(${tagPattern})\\b[^>]*\\/?>`, 'gi'), '')
+  // 匹配闭标签: </tagname>
+  text = text.replace(new RegExp(`<\\/(${tagPattern})>`, 'gi'), '')
+
+  // 3. 恢复占位符为实际的 < > 字符
+  text = text.replace(new RegExp(LT_PLACEHOLDER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '<')
+  text = text.replace(new RegExp(GT_PLACEHOLDER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '>')
+
+  // 4. 解码剩余的 HTML 实体
+  text = decodeHtmlEntities(text)
+
+  return text
+}
+
+/**
+ * 修复代码块中未转义的 < 字符
+ * 在 DOM 解析之前调用，防止浏览器将 < 误认为标签开始而截断内容
+ *
+ * 策略：在 <pre> 和 <code> 标签内，将看起来不像 HTML 标签的 < 转义为 &lt;
+ */
+export function fixUnescapedLtInCode(html: string): string {
+  // 处理 <pre>...</pre> 块
+  let result = html.replace(/<pre([^>]*)>([\s\S]*?)<\/pre>/gi, (_match, attrs, content) => {
+    const fixedContent = escapeNonTagLt(content)
+    return `<pre${attrs}>${fixedContent}</pre>`
+  })
+
+  // 处理独立的 <code>...</code> 块（不在 pre 内的）
+  result = result.replace(/<code([^>]*)>([\s\S]*?)<\/code>/gi, (_match, attrs, content) => {
+    const fixedContent = escapeNonTagLt(content)
+    return `<code${attrs}>${fixedContent}</code>`
+  })
+
+  return result
+}
+
+/**
+ * 转义不是 HTML 标签的 < 字符
+ * HTML 标签的特征：< 后紧跟字母或 /
+ */
+function escapeNonTagLt(content: string): string {
+  // 匹配 < 后面不是字母、/ 或 ! 的情况（不是有效标签开始）
+  // 例如：< 5, < =, <=, < b (空格后字母)
+  return content.replace(/<(?![a-zA-Z\/!])/g, '&lt;')
+}
+
+/**
+ * 从 HTML 代码块中提取纯文本（更安全的方式）
+ * 先处理换行标签，再提取文本
+ * @exported 供其他模块使用
+ */
+export function extractCodeFromHtml(html: string): string {
+  let text = html
+    // 保留换行标签的换行效果
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/div>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<\/li>/gi, '\n')
+    // 移除 code 标签但保留内容
+    .replace(/<\/?code[^>]*>/gi, '')
+
+  // 提取代码文本（处理实体和标签）
+  text = extractCodeText(text)
+
+  return text.trim()
+}
 
 /**
  * 转换选项
@@ -163,7 +343,7 @@ function addExtensionRules(turndownService: TurndownService): void {
         if (!firstRow) return false
         return isHeadingRow(firstRow)
       } catch (err) {
-        console.error('[Turndown] Table filter error:', err)
+        logger.error('Table filter error:', err)
         return false
       }
     },
@@ -187,18 +367,79 @@ function addExtensionRules(turndownService: TurndownService): void {
     filter: ['pre'],
     replacement: function(_content, node) {
       const pre = node as HTMLPreElement
-      // 尝试获取语言
-      const code = pre.querySelector('code')
+
+      // 尝试获取语言（多种来源）
       let language = ''
-      if (code) {
-        const className = code.className || ''
-        const langMatch = className.match(/language-(\w+)/)
-        if (langMatch) {
-          language = langMatch[1]
+      // 1. 从 pre 的 data-lang 属性获取
+      const dataLang = pre.getAttribute('data-lang')
+      if (dataLang) {
+        language = dataLang
+      }
+      // 2. 从 code 的 class 获取
+      if (!language) {
+        const code = pre.querySelector('code')
+        if (code) {
+          const className = code.className || ''
+          const langMatch = className.match(/language-(\w+)/)
+          if (langMatch) {
+            language = langMatch[1]
+          }
         }
       }
-      const text = (pre as HTMLPreElement).innerText || ''
-      return '\n```' + language + '\n' + text + '\n```\n'
+      // 3. 从 pre 的 class 获取
+      if (!language) {
+        const preClassName = pre.className || ''
+        const preLangMatch = preClassName.match(/language-(\w+)/)
+        if (preLangMatch) {
+          language = preLangMatch[1]
+        }
+      }
+      // 4. 默认使用 bash
+      if (!language) {
+        language = 'bash'
+      }
+
+      // 处理微信等平台将每行代码放在单独 <code> 标签的情况
+      const codeElements = pre.querySelectorAll('code')
+      let text: string
+      if (codeElements.length > 1) {
+        // 多个 code 标签，提取每个的文本并用换行连接
+        const lines: string[] = []
+        codeElements.forEach((codeEl) => {
+          lines.push(codeEl.innerText || codeEl.textContent || '')
+        })
+        text = lines.join('\n')
+      } else {
+        text = pre.innerText || ''
+      }
+
+      // 清理文本
+      text = text
+        .replace(/\r\n/g, '\n')  // 统一换行符
+        .replace(/\r/g, '\n')    // 处理旧 Mac 换行符
+        .replace(/^\n+/, '')     // 移除开头空行
+        .replace(/\n+$/, '')     // 移除结尾空行
+
+      // 空代码块不输出
+      if (!text.trim()) {
+        return ''
+      }
+
+      // 清理语言标识（只保留字母数字和常见字符）
+      language = language.replace(/[^a-zA-Z0-9+#._-]/g, '').toLowerCase()
+
+      // 检测内容中最长的连续反引号，使用更多反引号包裹
+      // 例如内容有 ``` 则用 ````，内容有 ```` 则用 `````
+      let fence = '```'
+      const backtickMatches = text.match(/`+/g)
+      if (backtickMatches) {
+        const maxBackticks = Math.max(...backtickMatches.map(m => m.length))
+        if (maxBackticks >= 3) {
+          fence = '`'.repeat(maxBackticks + 1)
+        }
+      }
+
+      return '\n' + fence + language + '\n' + text + '\n' + fence + '\n'
     }
   })
 
@@ -211,7 +452,7 @@ function addExtensionRules(turndownService: TurndownService): void {
       if (!firstRow) return true
       return !isHeadingRow(firstRow)
     } catch (err) {
-      console.error('[Turndown] Table keep filter error:', err)
+      logger.error('Table keep filter error:', err)
       return false
     }
   })
@@ -280,6 +521,14 @@ function extractLangFromClass(className: string): string {
 function htmlToMarkdownSimple(html: string): string {
   let md = html
 
+  // ============ 预处理：移除微信代码块行号 ============
+  // 必须在列表转换之前执行，否则 <li> 会被转成 "- "
+  // 支持 class="code-snippet__line-index" 和 class='code-snippet__line-index'
+  md = md.replace(
+    /<ul[^>]*class=["'][^"']*code-snippet__line-index[^"']*["'][^>]*>[\s\S]*?<\/ul>/gi,
+    ''
+  )
+
   // 表格转换 - 必须在移除其他标签之前处理
   md = convertTables(md)
 
@@ -326,20 +575,10 @@ function htmlToMarkdownSimple(html: string): string {
       }
     }
 
-    // 提取纯文本内容
-    let text = content
-      .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, '$1')
-      .replace(/<[^>]+>/g, '')
+    // 使用安全的代码提取函数
+    const text = extractCodeFromHtml(content)
 
-    // 解码 HTML 实体
-    text = text
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&amp;/g, '&')
-      .replace(/&quot;/g, '"')
-      .replace(/&#039;/g, "'")
-
-    return '\n```' + language + '\n' + text.trim() + '\n```\n'
+    return '\n```' + language + '\n' + text + '\n```\n'
   })
 
   // 行内代码
@@ -548,7 +787,7 @@ export { TurndownService }
 export function htmlToMarkdownNative(html: string, options: TurndownOptions = {}): string {
   if (typeof document === 'undefined') {
     // 回退到简单正则转换（Service Worker 环境）
-    console.warn('[Turndown] No native DOM, falling back to regex conversion')
+    logger.warn('No native DOM, falling back to regex conversion')
     return htmlToMarkdownSimple(html)
   }
 
@@ -572,9 +811,13 @@ export function htmlToMarkdownNative(html: string, options: TurndownOptions = {}
     const container = document.createElement('div')
     container.innerHTML = html
 
+    // 预处理：移除微信代码块行号元素（必须在 turndown 之前）
+    container.querySelectorAll('ul.code-snippet__line-index, ul[class*="code-snippet__line-index"]')
+      .forEach(el => el.remove())
+
     return turndownService.turndown(container)
   } catch (err) {
-    console.error('[Turndown] Native DOM conversion failed:', err)
+    logger.error('Native DOM conversion failed:', err)
     return htmlToMarkdownSimple(html)
   }
 }

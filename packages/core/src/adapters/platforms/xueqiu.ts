@@ -5,7 +5,6 @@ import { CodeAdapter, type ImageUploadResult } from '../code-adapter'
 import { Remarkable } from 'remarkable'
 import type { Article, AuthResult, SyncResult, PlatformMeta } from '../../types'
 import type { PublishOptions } from '../types'
-import { htmlToMarkdown, markdownToHtml } from '../../lib'
 import { createLogger } from '../../lib/logger'
 
 const logger = createLogger('Xueqiu')
@@ -26,40 +25,28 @@ export class XueqiuAdapter extends CodeAdapter {
     capabilities: ['article', 'draft', 'image_upload'],
   }
 
+  /** 预处理配置: 雪球使用 Markdown 格式 */
+  readonly preprocessConfig = {
+    outputFormat: 'markdown' as const,
+    // doPreFilter + processDocCode (旧版)
+    removeSpecialTags: true,
+    removeSpecialTagsWithParent: true,
+    processCodeBlocks: true,
+  }
+
   private currentUser: XueqiuUser | null = null
-  private headerRuleIds: string[] = []
 
-  /**
-   * 设置动态请求头规则 (CORS)
-   */
-  private async setupHeaderRules(): Promise<void> {
-    if (this.headerRuleIds.length > 0) return
-    if (!this.runtime.headerRules) return
-
-    const ruleId = await this.runtime.headerRules.add({
+  /** 雪球 API 需要的 Header 规则 */
+  private readonly HEADER_RULES = [
+    {
       urlFilter: '*://mp.xueqiu.com/xq/*',
       headers: {
         'Origin': 'https://mp.xueqiu.com',
         'Referer': 'https://mp.xueqiu.com/',
       },
       resourceTypes: ['xmlhttprequest'],
-    })
-    this.headerRuleIds.push(ruleId)
-
-    logger.debug('Header rules added:', this.headerRuleIds)
-  }
-
-  /**
-   * 清除动态请求头规则
-   */
-  private async clearHeaderRules(): Promise<void> {
-    if (!this.runtime.headerRules) return
-    for (const ruleId of this.headerRuleIds) {
-      await this.runtime.headerRules.remove(ruleId)
-    }
-    this.headerRuleIds = []
-    logger.debug('Header rules cleared')
-  }
+    },
+  ]
 
   async checkAuth(): Promise<AuthResult> {
     try {
@@ -110,10 +97,7 @@ export class XueqiuAdapter extends CodeAdapter {
   }
 
   async publish(article: Article, options?: PublishOptions): Promise<SyncResult> {
-    // 设置请求头规则
-    await this.setupHeaderRules()
-
-    try {
+    return this.withHeaderRules(this.HEADER_RULES, async () => {
       logger.info('Starting publish...')
 
       // 1. 确保已登录
@@ -124,20 +108,12 @@ export class XueqiuAdapter extends CodeAdapter {
         }
       }
 
-      // 2. 获取 HTML 内容
-      const rawHtml = article.html || markdownToHtml(article.markdown)
+      // Use pre-processed markdown content directly
+      let markdown = article.markdown || ''
 
-      // 3. 清理内容
-      let content = this.cleanHtml(rawHtml, {
-        removeIframes: true,
-        removeSvgImages: true,
-        removeTags: ['qqmusic'],
-        removeAttrs: ['data-reader-unique-id'],
-      })
-
-      // 3. 处理图片
-      content = await this.processImages(
-        content,
+      // Process images in markdown
+      markdown = await this.processImages(
+        markdown,
         (src) => this.uploadImageByUrl(src),
         {
           skipPatterns: ['xueqiu.com', 'imedao.com'],
@@ -145,8 +121,7 @@ export class XueqiuAdapter extends CodeAdapter {
         }
       )
 
-      // 4. 转换为 Markdown 再转回简化 HTML (雪球格式)
-      const markdown = htmlToMarkdown(content)
+      // Convert Markdown to simplified HTML (Xueqiu format)
       const md = new Remarkable({
         html: true,
         breaks: true,
@@ -185,13 +160,13 @@ export class XueqiuAdapter extends CodeAdapter {
 
       let rendered = md.render(markdown)
 
-      // 清理: 移除空 p 标签和多余换行
+      // Clean up: remove empty p tags and excessive newlines
       rendered = rendered
         .replace(/<p>\s*<\/p>/g, '')
         .replace(/\n{3,}/g, '\n\n')
         .trim()
 
-      content = rendered
+      const content = rendered
 
       // 4. 保存草稿
       const formData = new URLSearchParams({
@@ -231,22 +206,14 @@ export class XueqiuAdapter extends CodeAdapter {
       const postId = res.id
       const draftUrl = `https://mp.xueqiu.com/write/draft/${postId}`
 
-      const result = this.createResult(true, {
+      return this.createResult(true, {
         postId: String(postId),
         postUrl: draftUrl,
         draftOnly: options?.draftOnly ?? true,
       })
-
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return result
-    } catch (error) {
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return this.createResult(false, {
-        error: (error as Error).message,
-      })
-    }
+    }).catch((error) => this.createResult(false, {
+      error: (error as Error).message,
+    }))
   }
 
   /**

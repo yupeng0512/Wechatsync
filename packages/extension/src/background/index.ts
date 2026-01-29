@@ -13,9 +13,6 @@ import * as metaweblogAdapter from '../adapters/cms/metaweblog'
 import { startMcpClient, stopMcpClient, getMcpStatus, mcpClient } from '../mcp/client'
 import { createLogger } from '../lib/logger'
 import {
-  trackSyncStart,
-  trackPlatformSync,
-  trackSyncComplete,
   trackInstall,
   trackCmsSync,
   trackFeatureUse,
@@ -949,11 +946,11 @@ function getCmsIcon(type: string): string {
     case 'wordpress':
       return 'https://s.w.org/style/images/about/WordPress-logotype-simplified.png'
     case 'typecho':
-      return '/assets/typecho.ico'
+      return chrome.runtime.getURL('assets/typecho.ico')
     case 'metaweblog':
       return 'https://www.cnblogs.com/favicon.ico'
     default:
-      return '/assets/icon-48.png'
+      return chrome.runtime.getURL('assets/icon-48.png')
   }
 }
 

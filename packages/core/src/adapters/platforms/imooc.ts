@@ -13,43 +13,28 @@ export class ImoocAdapter extends CodeAdapter {
     capabilities: ['article', 'draft', 'image_upload'],
   }
 
-  // Header 规则 ID
-  private headerRuleId: string | null = null
+  /** 预处理配置: 慕课网使用 Markdown 格式 */
+  readonly preprocessConfig = {
+    outputFormat: 'markdown' as const,
+  }
 
-  /**
-   * 添加 Header 规则
-   */
-  private async addHeaderRules(): Promise<void> {
-    if (!this.runtime.headerRules) return
-
-    this.headerRuleId = await this.runtime.headerRules.add({
+  /** 慕课网 API 需要的 Header 规则 */
+  private readonly HEADER_RULES = [
+    {
       urlFilter: '*://www.imooc.com/article/*',
       headers: {
         Origin: 'https://www.imooc.com',
         Referer: 'https://www.imooc.com/',
       },
-    })
-  }
-
-  /**
-   * 移除 Header 规则
-   */
-  private async removeHeaderRules(): Promise<void> {
-    if (!this.runtime.headerRules) return
-
-    if (this.headerRuleId) {
-      await this.runtime.headerRules.remove(this.headerRuleId)
-      this.headerRuleId = null
-    }
-  }
+      resourceTypes: ['xmlhttprequest'],
+    },
+  ]
 
   /**
    * 检查登录状态
    */
   async checkAuth(): Promise<AuthResult> {
-    try {
-      await this.addHeaderRules()
-
+    return this.withHeaderRules(this.HEADER_RULES, async () => {
       const response = await this.runtime.fetch('https://www.imooc.com/u/card', {
         credentials: 'include',
       })
@@ -58,8 +43,6 @@ export class ImoocAdapter extends CodeAdapter {
       // 解析 JSONP 响应
       text = text.replace('jsonpcallback(', '').replace('})', '}')
       const result = JSON.parse(text)
-
-      await this.removeHeaderRules()
 
       if (result.result !== 0) {
         return { isAuthenticated: false, error: result.msg || '未登录' }
@@ -71,10 +54,7 @@ export class ImoocAdapter extends CodeAdapter {
         username: result.data.nickname,
         avatar: result.data.img,
       }
-    } catch (error) {
-      await this.removeHeaderRules()
-      return { isAuthenticated: false, error: (error as Error).message }
-    }
+    }).catch((error) => ({ isAuthenticated: false, error: (error as Error).message }))
   }
 
   /**
@@ -126,9 +106,7 @@ export class ImoocAdapter extends CodeAdapter {
    */
   async publish(article: Article): Promise<SyncResult> {
     const now = Date.now()
-    try {
-      await this.addHeaderRules()
-
+    return this.withHeaderRules(this.HEADER_RULES, async () => {
       // 优先使用 markdown，处理图片
       let content = article.markdown || article.html || ''
       content = await this.processImages(content, (src) => this.uploadImageByUrl(src))
@@ -148,7 +126,6 @@ export class ImoocAdapter extends CodeAdapter {
       })
 
       const res = await response.json()
-      await this.removeHeaderRules()
 
       if (!res.data) {
         throw new Error('发布失败')
@@ -162,14 +139,11 @@ export class ImoocAdapter extends CodeAdapter {
         draftOnly: true,
         timestamp: now,
       }
-    } catch (error) {
-      await this.removeHeaderRules()
-      return {
-        platform: this.meta.id,
-        success: false,
-        error: (error as Error).message,
-        timestamp: now,
-      }
-    }
+    }).catch((error) => ({
+      platform: this.meta.id,
+      success: false,
+      error: (error as Error).message,
+      timestamp: now,
+    }))
   }
 }

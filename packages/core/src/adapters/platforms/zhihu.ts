@@ -4,7 +4,6 @@
 import { CodeAdapter, type ImageUploadResult } from '../code-adapter'
 import type { Article, AuthResult, SyncResult, PlatformMeta } from '../../types'
 import type { PublishOptions } from '../types'
-import { processHtml } from '../../lib'
 import { createLogger } from '../../lib/logger'
 import md5Lib from 'js-md5'
 
@@ -22,59 +21,43 @@ export class ZhihuAdapter extends CodeAdapter {
     capabilities: ['article', 'draft', 'image_upload', 'tags', 'cover'],
   }
 
-  private headerRuleIds: string[] = []
+  /** 预处理配置: 知乎使用 HTML，需要特殊处理 */
+  readonly preprocessConfig = {
+    outputFormat: 'html' as const,
+    // doPreFilter: 移除特殊标签及其父元素
+    removeSpecialTags: true,
+    removeSpecialTagsWithParent: true,
+    // processDocCode: 处理代码块
+    processCodeBlocks: true,
+    convertSectionToDiv: true,
+    removeTrailingBr: true,
+    unwrapSingleChildContainers: true,
+    unwrapNestedFigures: true,
+    compactHtml: true,
+    // 清理空内容（与旧 processHtml 一致）
+    removeEmptyLines: true,
+    removeEmptyDivs: true,
+    removeNestedEmptyContainers: true,
+  }
 
-  /**
-   * 设置动态请求头规则
-   */
-  private async setupHeaderRules(): Promise<void> {
-    if (this.headerRuleIds.length > 0) return
-    if (!this.runtime.headerRules) return
-
-    // www.zhihu.com/api/
-    const ruleId1 = await this.runtime.headerRules.add({
+  /** 知乎 API 需要的 Header 规则 */
+  private readonly HEADER_RULES = [
+    {
       urlFilter: '*://www.zhihu.com/api/*',
-      headers: {
-        'x-requested-with': 'fetch',
-      },
+      headers: { 'x-requested-with': 'fetch' },
       resourceTypes: ['xmlhttprequest'],
-    })
-    this.headerRuleIds.push(ruleId1)
-
-    // zhuanlan.zhihu.com/api/
-    const ruleId2 = await this.runtime.headerRules.add({
+    },
+    {
       urlFilter: '*://zhuanlan.zhihu.com/api/*',
-      headers: {
-        'x-requested-with': 'fetch',
-      },
+      headers: { 'x-requested-with': 'fetch' },
       resourceTypes: ['xmlhttprequest'],
-    })
-    this.headerRuleIds.push(ruleId2)
-
-    // api.zhihu.com/
-    const ruleId3 = await this.runtime.headerRules.add({
+    },
+    {
       urlFilter: '*://api.zhihu.com/*',
-      headers: {
-        'x-requested-with': 'fetch',
-      },
+      headers: { 'x-requested-with': 'fetch' },
       resourceTypes: ['xmlhttprequest'],
-    })
-    this.headerRuleIds.push(ruleId3)
-
-    logger.debug('Header rules added:', this.headerRuleIds)
-  }
-
-  /**
-   * 清除动态请求头规则
-   */
-  private async clearHeaderRules(): Promise<void> {
-    if (!this.runtime.headerRules) return
-    for (const ruleId of this.headerRuleIds) {
-      await this.runtime.headerRules.remove(ruleId)
-    }
-    this.headerRuleIds = []
-    logger.debug('Header rules cleared')
-  }
+    },
+  ]
 
   async checkAuth(): Promise<AuthResult> {
     try {
@@ -109,10 +92,7 @@ export class ZhihuAdapter extends CodeAdapter {
   }
 
   async publish(article: Article, options?: PublishOptions): Promise<SyncResult> {
-    // 设置请求头规则
-    await this.setupHeaderRules()
-
-    try {
+    return this.withHeaderRules(this.HEADER_RULES, async () => {
       logger.info('Starting publish...')
 
       // 1. 创建草稿
@@ -153,28 +133,11 @@ export class ZhihuAdapter extends CodeAdapter {
       const draftId = createData.id
       logger.debug('Draft created:', draftId)
 
-      // 2. 获取 HTML 内容并处理
-      const rawHtml = article.html || article.markdown
+      // 2. 使用预处理好的 HTML（Content Script 已处理代码块、图片、特殊标签等）
+      // 知乎使用 HTML 格式
+      let content = article.html || ''
 
-      // 3. HTML 预处理 (来自 DSL zhihu.yaml html_processing 配置)
-      let content = processHtml(rawHtml, {
-        removeComments: true,
-        removeSpecialTags: true,
-        processCodeBlocks: true,
-        convertSectionToDiv: true,
-        removeEmptyLines: true,
-        removeEmptyDivs: true,
-        removeNestedEmptyContainers: true,
-        unwrapSingleChildContainers: true,
-        unwrapNestedFigures: true,
-        removeTrailingBr: true,
-        removeDataAttributes: true,
-        removeSrcset: true,
-        removeSizes: true,
-        compactHtml: true,
-      })
-
-      // 4. 处理图片
+      // 3. 处理图片（section → div 转换已在 preprocessConfig 中处理）
       content = await this.processImages(
         content,
         (src) => this.uploadImageByUrl(src),
@@ -184,10 +147,10 @@ export class ZhihuAdapter extends CodeAdapter {
         }
       )
 
-      // 5. 知乎特定的内容转换
+      // 4. 知乎特定的内容转换
       content = this.transformContent(content)
 
-      // 6. 更新草稿内容
+      // 5. 更新草稿内容
       const updateResponse = await this.runtime.fetch(
         `https://zhuanlan.zhihu.com/api/articles/${draftId}/draft`,
         {
@@ -215,22 +178,14 @@ export class ZhihuAdapter extends CodeAdapter {
 
       const draftUrl = `https://zhuanlan.zhihu.com/p/${draftId}/edit`
 
-      const result = this.createResult(true, {
+      return this.createResult(true, {
         postId: draftId,
         postUrl: draftUrl,
         draftOnly: options?.draftOnly ?? true,
       })
-
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return result
-    } catch (error) {
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return this.createResult(false, {
-        error: (error as Error).message,
-      })
-    }
+    }).catch((error) => this.createResult(false, {
+      error: (error as Error).message,
+    }))
   }
 
   /**

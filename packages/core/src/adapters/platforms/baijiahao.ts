@@ -4,7 +4,6 @@
 import { CodeAdapter, type ImageUploadResult } from '../code-adapter'
 import type { Article, AuthResult, SyncResult, PlatformMeta } from '../../types'
 import type { PublishOptions } from '../types'
-import { markdownToHtml } from '../../lib'
 import { createLogger } from '../../lib/logger'
 
 const logger = createLogger('Baijiahao')
@@ -24,41 +23,25 @@ export class BaijiahaoAdapter extends CodeAdapter {
     capabilities: ['article', 'draft', 'image_upload'],
   }
 
+  /** 预处理配置: 百家号使用 HTML 格式 */
+  readonly preprocessConfig = {
+    outputFormat: 'html' as const,
+  }
+
   private userInfo: BaijiahaoUserInfo | null = null
   private authToken: string = ''
-  private headerRuleIds: string[] = []
 
-  /**
-   * 设置动态请求头规则 (CORS)
-   */
-  private async setupHeaderRules(): Promise<void> {
-    if (this.headerRuleIds.length > 0) return
-    if (!this.runtime.headerRules) return
-
-    const ruleId = await this.runtime.headerRules.add({
+  /** 百家号 API 需要的 Header 规则 */
+  private readonly HEADER_RULES = [
+    {
       urlFilter: '*://baijiahao.baidu.com/*',
       headers: {
         'Origin': 'https://baijiahao.baidu.com',
         'Referer': 'https://baijiahao.baidu.com/',
       },
       resourceTypes: ['xmlhttprequest'],
-    })
-    this.headerRuleIds.push(ruleId)
-
-    logger.debug('Header rules added:', this.headerRuleIds)
-  }
-
-  /**
-   * 清除动态请求头规则
-   */
-  private async clearHeaderRules(): Promise<void> {
-    if (!this.runtime.headerRules) return
-    for (const ruleId of this.headerRuleIds) {
-      await this.runtime.headerRules.remove(ruleId)
-    }
-    this.headerRuleIds = []
-    logger.debug('Header rules cleared')
-  }
+    },
+  ]
 
   async checkAuth(): Promise<AuthResult> {
     try {
@@ -104,10 +87,7 @@ export class BaijiahaoAdapter extends CodeAdapter {
   }
 
   async publish(article: Article, options?: PublishOptions): Promise<SyncResult> {
-    // 设置请求头规则
-    await this.setupHeaderRules()
-
-    try {
+    return this.withHeaderRules(this.HEADER_RULES, async () => {
       logger.info('Starting publish...')
 
       if (!this.userInfo) {
@@ -119,14 +99,8 @@ export class BaijiahaoAdapter extends CodeAdapter {
 
       this.authToken = await this.fetchAuthToken()
 
-      const rawHtml = article.html || markdownToHtml(article.markdown)
-
-      let content = this.cleanHtml(rawHtml, {
-        removeIframes: true,
-        removeSvgImages: true,
-        removeTags: ['qqmusic'],
-        removeAttrs: ['data-reader-unique-id'],
-      })
+      // Use pre-processed HTML content directly
+      let content = article.html || ''
 
       content = await this.processImages(
         content,
@@ -181,22 +155,14 @@ export class BaijiahaoAdapter extends CodeAdapter {
       const postId = res.ret.article_id
       const draftUrl = `https://baijiahao.baidu.com/builder/rc/edit?type=news&article_id=${postId}`
 
-      const result = this.createResult(true, {
+      return this.createResult(true, {
         postId: postId,
         postUrl: draftUrl,
         draftOnly: options?.draftOnly ?? true,
       })
-
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return result
-    } catch (error) {
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return this.createResult(false, {
-        error: (error as Error).message,
-      })
-    }
+    }).catch((error) => this.createResult(false, {
+      error: (error as Error).message,
+    }))
   }
 
   protected async uploadImageByUrl(src: string): Promise<ImageUploadResult> {

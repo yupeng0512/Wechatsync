@@ -17,6 +17,12 @@ export class YidianAdapter extends CodeAdapter {
     capabilities: ['article', 'draft', 'image_upload'],
   }
 
+  /** 预处理配置: 一点号使用 HTML 格式 */
+  readonly preprocessConfig = {
+    outputFormat: 'html' as const,
+    removeLinks: true,
+  }
+
   /**
    * 检查登录状态
    */
@@ -86,15 +92,11 @@ export class YidianAdapter extends CodeAdapter {
   async publish(article: Article): Promise<SyncResult> {
     const now = Date.now()
     try {
-      // 1. 处理图片
-      let content = article.html || article.markdown || ''
-      content = await this.processImages(content, (src) => this.uploadImageByUrl(src))
+      // Use pre-processed HTML content directly
+      let content = article.html || ''
 
-      // 2. 清理 HTML (移除链接、iframe)
-      content = this.cleanHtml(content, {
-        removeLinks: true,
-        removeIframes: true,
-      })
+      // Process images
+      content = await this.processImages(content, (src) => this.uploadImageByUrl(src))
 
       // 3. 发布到一点号
       const response = await this.runtime.fetch('https://mp.yidianzixun.com/model/Article', {

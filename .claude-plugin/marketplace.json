@@ -1,0 +1,11 @@
+{
+  "plugins": [
+    {
+      "name": "wechatsync",
+      "source": "./",
+      "version": "1.0.0",
+      "description": "Sync articles to 20+ content platforms (Zhihu, Juejin, CSDN, Toutiao, Weibo, etc.)",
+      "author": "fun"
+    }
+  ]
+}

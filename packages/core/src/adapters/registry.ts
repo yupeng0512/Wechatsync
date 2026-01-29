@@ -1,4 +1,5 @@
-import type { PlatformAdapter, AdapterRegistryEntry } from './types'
+import type { PlatformAdapter, AdapterRegistryEntry, PreprocessConfig } from './types'
+import { DEFAULT_PREPROCESS_CONFIG } from './types'
 import type { RuntimeInterface } from '../runtime/interface'
 import type { PlatformMeta } from '../types'
 
@@ -89,6 +90,28 @@ class AdapterRegistry {
     this.adapters.clear()
     this.instances.clear()
   }
+
+  /**
+   * 获取平台的预处理配置
+   */
+  getPreprocessConfig(platformId: string): PreprocessConfig {
+    const entry = this.adapters.get(platformId)
+    return {
+      ...DEFAULT_PREPROCESS_CONFIG,
+      ...(entry?.preprocessConfig || {}),
+    }
+  }
+
+  /**
+   * 获取多个平台的预处理配置
+   */
+  getPreprocessConfigs(platformIds: string[]): Record<string, PreprocessConfig> {
+    const configs: Record<string, PreprocessConfig> = {}
+    for (const id of platformIds) {
+      configs[id] = this.getPreprocessConfig(id)
+    }
+    return configs
+  }
 }
 
 /**
@@ -108,4 +131,18 @@ export function registerAdapter(entry: AdapterRegistryEntry): void {
  */
 export async function getAdapter(platformId: string): Promise<PlatformAdapter | null> {
   return adapterRegistry.get(platformId)
+}
+
+/**
+ * 获取平台的预处理配置
+ */
+export function getPreprocessConfig(platformId: string): PreprocessConfig {
+  return adapterRegistry.getPreprocessConfig(platformId)
+}
+
+/**
+ * 获取多个平台的预处理配置
+ */
+export function getPreprocessConfigs(platformIds: string[]): Record<string, PreprocessConfig> {
+  return adapterRegistry.getPreprocessConfigs(platformIds)
 }

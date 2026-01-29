@@ -4,7 +4,6 @@
 import { CodeAdapter, type ImageUploadResult } from '../code-adapter'
 import type { Article, AuthResult, SyncResult, PlatformMeta } from '../../types'
 import type { PublishOptions } from '../types'
-import { htmlToMarkdown, markdownToHtml } from '../../lib'
 import { createLogger } from '../../lib/logger'
 
 const logger = createLogger('Yuque')
@@ -29,43 +28,31 @@ export class YuqueAdapter extends CodeAdapter {
     capabilities: ['article', 'draft', 'image_upload'],
   }
 
+  /** 预处理配置: 语雀使用 Markdown 格式 (转换为 lake) */
+  readonly preprocessConfig = {
+    outputFormat: 'markdown' as const,
+    // doPreFilter + processDocCode (旧版)
+    removeSpecialTags: true,
+    removeSpecialTagsWithParent: true,
+    processCodeBlocks: true,
+  }
+
   private userInfo: YuqueUserInfo | null = null
   private bookId: number | null = null
   private csrfToken: string = ''
   private currentPostId: number | null = null
-  private headerRuleIds: string[] = []
 
-  /**
-   * 设置动态请求头规则 (CORS)
-   */
-  private async setupHeaderRules(): Promise<void> {
-    if (this.headerRuleIds.length > 0) return
-    if (!this.runtime.headerRules) return
-
-    const ruleId = await this.runtime.headerRules.add({
+  /** 语雀 API 需要的 Header 规则 */
+  private readonly HEADER_RULES = [
+    {
       urlFilter: '*://www.yuque.com/api/*',
       headers: {
         'Origin': 'https://www.yuque.com',
         'Referer': 'https://www.yuque.com/dashboard',
       },
       resourceTypes: ['xmlhttprequest'],
-    })
-    this.headerRuleIds.push(ruleId)
-
-    logger.debug('Header rules added:', this.headerRuleIds)
-  }
-
-  /**
-   * 清除动态请求头规则
-   */
-  private async clearHeaderRules(): Promise<void> {
-    if (!this.runtime.headerRules) return
-    for (const ruleId of this.headerRuleIds) {
-      await this.runtime.headerRules.remove(ruleId)
-    }
-    this.headerRuleIds = []
-    logger.debug('Header rules cleared')
-  }
+    },
+  ]
 
   private async getCsrfToken(): Promise<string> {
     if (this.runtime.getCookie) {
@@ -122,10 +109,7 @@ export class YuqueAdapter extends CodeAdapter {
   }
 
   async publish(article: Article, options?: PublishOptions): Promise<SyncResult> {
-    // 设置请求头规则
-    await this.setupHeaderRules()
-
-    try {
+    return this.withHeaderRules(this.HEADER_RULES, async () => {
       logger.info('Starting publish...')
 
       if (!this.userInfo || !this.bookId) {
@@ -168,25 +152,18 @@ export class YuqueAdapter extends CodeAdapter {
       const postId = createRes.data.id
       this.currentPostId = postId
 
-      const rawHtml = article.html || markdownToHtml(article.markdown)
+      // Use pre-processed markdown content directly
+      let markdown = article.markdown || ''
 
-      let content = this.cleanHtml(rawHtml, {
-        removeIframes: true,
-        removeSvgImages: true,
-        removeTags: ['qqmusic'],
-        removeAttrs: ['data-reader-unique-id'],
-      })
-
-      content = await this.processImages(
-        content,
+      // Process images in markdown
+      markdown = await this.processImages(
+        markdown,
         (src) => this.uploadImageByUrl(src),
         {
           skipPatterns: ['yuque.com', 'cdn.nlark.com'],
           onProgress: options?.onImageProgress,
         }
       )
-
-      const markdown = htmlToMarkdown(content)
 
       const convertResponse = await this.runtime.fetch(
         'https://www.yuque.com/api/docs/convert',
@@ -242,22 +219,14 @@ export class YuqueAdapter extends CodeAdapter {
 
       const draftUrl = `https://www.yuque.com/go/doc/${postId}/edit`
 
-      const result = this.createResult(true, {
+      return this.createResult(true, {
         postId: String(postId),
         postUrl: draftUrl,
         draftOnly: options?.draftOnly ?? true,
       })
-
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return result
-    } catch (error) {
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return this.createResult(false, {
-        error: (error as Error).message,
-      })
-    }
+    }).catch((error) => this.createResult(false, {
+      error: (error as Error).message,
+    }))
   }
 
   protected async uploadImageByUrl(src: string): Promise<ImageUploadResult> {

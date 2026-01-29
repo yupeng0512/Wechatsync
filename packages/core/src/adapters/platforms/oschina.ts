@@ -13,35 +13,24 @@ export class OschinaAdapter extends CodeAdapter {
     capabilities: ['article', 'draft', 'image_upload'],
   }
 
+  /** 预处理配置: 开源中国使用 Markdown 格式 */
+  readonly preprocessConfig = {
+    outputFormat: 'markdown' as const,
+  }
+
   private userId: string | null = null
-  private headerRuleId: string | null = null
 
-  /**
-   * 添加 Header 规则
-   */
-  private async addHeaderRules(): Promise<void> {
-    if (!this.runtime.headerRules) return
-
-    this.headerRuleId = await this.runtime.headerRules.add({
+  /** 开源中国 API 需要的 Header 规则 */
+  private readonly HEADER_RULES = [
+    {
       urlFilter: '*://my.oschina.net/u/*',
       headers: {
         Origin: 'https://my.oschina.net',
         Referer: 'https://my.oschina.net/',
       },
-    })
-  }
-
-  /**
-   * 移除 Header 规则
-   */
-  private async removeHeaderRules(): Promise<void> {
-    if (!this.runtime.headerRules) return
-
-    if (this.headerRuleId) {
-      await this.runtime.headerRules.remove(this.headerRuleId)
-      this.headerRuleId = null
-    }
-  }
+      resourceTypes: ['xmlhttprequest'],
+    },
+  ]
 
   /**
    * 检查登录状态
@@ -136,9 +125,8 @@ export class OschinaAdapter extends CodeAdapter {
    */
   async publish(article: Article): Promise<SyncResult> {
     const now = Date.now()
-    try {
-      await this.addHeaderRules()
 
+    return this.withHeaderRules(this.HEADER_RULES, async () => {
       // 确保已获取用户 ID
       if (!this.userId) {
         const auth = await this.checkAuth()
@@ -183,7 +171,6 @@ export class OschinaAdapter extends CodeAdapter {
       )
 
       const res = await response.json()
-      await this.removeHeaderRules()
 
       if (res.code !== 1) {
         throw new Error(res.message || '发布失败')
@@ -199,14 +186,11 @@ export class OschinaAdapter extends CodeAdapter {
         draftOnly: true,
         timestamp: now,
       }
-    } catch (error) {
-      await this.removeHeaderRules()
-      return {
-        platform: this.meta.id,
-        success: false,
-        error: (error as Error).message,
-        timestamp: now,
-      }
-    }
+    }).catch((error) => ({
+      platform: this.meta.id,
+      success: false,
+      error: (error as Error).message,
+      timestamp: now,
+    }))
   }
 }

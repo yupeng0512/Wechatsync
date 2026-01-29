@@ -4,6 +4,7 @@
  */
 
 import { htmlToMarkdownNative } from '@wechatsync/core'
+import { preprocessContentDOM } from '../lib/content-processor'
 
 ;(() => {
 interface Platform {
@@ -869,9 +870,9 @@ function extractWeixinArticle() {
     return null
   }
 
-  // 克隆内容元素，处理懒加载图片
+  // 克隆内容元素，预处理（图片、代码块等）
   const clonedContent = contentEl.cloneNode(true) as HTMLElement
-  processLazyImages(clonedContent)
+  preprocessContentDOM(clonedContent)
 
   // 转换 HTML 为 Markdown（用于 markdown 优先的平台）
   const htmlContent = clonedContent.innerHTML
@@ -889,35 +890,6 @@ function extractWeixinArticle() {
       platform: 'weixin',
     },
   }
-}
-
-/**
- * 处理懒加载图片
- */
-function processLazyImages(container: HTMLElement) {
-  const images = container.querySelectorAll('img')
-
-  images.forEach((img) => {
-    const realSrc =
-      img.getAttribute('data-src') ||
-      img.getAttribute('data-original') ||
-      img.getAttribute('data-actualsrc') ||
-      img.getAttribute('_src') ||
-      img.src
-
-    if (realSrc && !realSrc.startsWith('data:image/svg')) {
-      img.setAttribute('src', realSrc)
-    }
-
-    img.removeAttribute('data-src')
-    img.removeAttribute('data-original')
-    img.removeAttribute('data-actualsrc')
-    img.removeAttribute('_src')
-    img.removeAttribute('data-ratio')
-    img.removeAttribute('data-w')
-    img.removeAttribute('data-type')
-    img.removeAttribute('data-s')
-  })
 }
 
 // 页面加载完成后注入

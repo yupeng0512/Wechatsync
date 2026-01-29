@@ -4,7 +4,6 @@
 import { CodeAdapter, type ImageUploadResult } from '../code-adapter'
 import type { Article, AuthResult, SyncResult, PlatformMeta } from '../../types'
 import type { PublishOptions } from '../types'
-import { markdownToHtml } from '../../lib'
 import { createLogger } from '../../lib/logger'
 
 const logger = createLogger('DaYu')
@@ -26,53 +25,33 @@ export class DaYuAdapter extends CodeAdapter {
     capabilities: ['article', 'draft', 'image_upload'],
   }
 
+  /** 预处理配置: 大鱼号使用 HTML 格式 */
+  readonly preprocessConfig = {
+    outputFormat: 'html' as const,
+  }
+
   private cacheMeta: DaYuMeta | null = null
   private uploadedImages: Array<{ org_url: string; url: string }> = []
-  private headerRuleIds: string[] = []
 
-  /**
-   * 设置动态请求头规则 (CORS)
-   */
-  private async setupHeaderRules(): Promise<void> {
-    if (this.headerRuleIds.length > 0) return
-    if (!this.runtime.headerRules) return
-
-    // mp.dayu.com
-    const ruleId1 = await this.runtime.headerRules.add({
+  /** 大鱼号 API 需要的 Header 规则 */
+  private readonly HEADER_RULES = [
+    {
       urlFilter: '*://mp.dayu.com/*',
       headers: {
         'Origin': 'https://mp.dayu.com',
         'Referer': 'https://mp.dayu.com/',
       },
       resourceTypes: ['xmlhttprequest'],
-    })
-    this.headerRuleIds.push(ruleId1)
-
-    // ns.dayu.com
-    const ruleId2 = await this.runtime.headerRules.add({
+    },
+    {
       urlFilter: '*://ns.dayu.com/*',
       headers: {
         'Origin': 'https://mp.dayu.com',
         'Referer': 'https://mp.dayu.com/',
       },
       resourceTypes: ['xmlhttprequest'],
-    })
-    this.headerRuleIds.push(ruleId2)
-
-    logger.debug('Header rules added:', this.headerRuleIds)
-  }
-
-  /**
-   * 清除动态请求头规则
-   */
-  private async clearHeaderRules(): Promise<void> {
-    if (!this.runtime.headerRules) return
-    for (const ruleId of this.headerRuleIds) {
-      await this.runtime.headerRules.remove(ruleId)
-    }
-    this.headerRuleIds = []
-    logger.debug('Header rules cleared')
-  }
+    },
+  ]
 
   async checkAuth(): Promise<AuthResult> {
     try {
@@ -171,10 +150,7 @@ export class DaYuAdapter extends CodeAdapter {
   }
 
   async publish(article: Article, options?: PublishOptions): Promise<SyncResult> {
-    // 设置请求头规则
-    await this.setupHeaderRules()
-
-    try {
+    return this.withHeaderRules(this.HEADER_RULES, async () => {
       logger.info('Starting publish...')
 
       // 重置上传图片列表
@@ -188,18 +164,10 @@ export class DaYuAdapter extends CodeAdapter {
         }
       }
 
-      // 2. 获取 HTML 内容
-      const rawHtml = article.html || markdownToHtml(article.markdown)
+      // Use pre-processed HTML content directly
+      let content = article.html || ''
 
-      // 3. 清理内容
-      let content = this.cleanHtml(rawHtml, {
-        removeIframes: true,
-        removeSvgImages: true,
-        removeTags: ['qqmusic'],
-        removeAttrs: ['data-reader-unique-id'],
-      })
-
-      // 4. 处理图片
+      // Process images
       content = await this.processImages(
         content,
         (src) => this.uploadImageByUrl(src),
@@ -255,22 +223,14 @@ export class DaYuAdapter extends CodeAdapter {
       const postId = res.data._id
       const draftUrl = `https://mp.dayu.com/dashboard/article/write?draft_id=${postId}`
 
-      const result = this.createResult(true, {
+      return this.createResult(true, {
         postId: postId,
         postUrl: draftUrl,
         draftOnly: options?.draftOnly ?? true,
       })
-
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return result
-    } catch (error) {
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return this.createResult(false, {
-        error: (error as Error).message,
-      })
-    }
+    }).catch((error) => this.createResult(false, {
+      error: (error as Error).message,
+    }))
   }
 
   /**

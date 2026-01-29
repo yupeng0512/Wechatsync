@@ -4,7 +4,6 @@
 import { CodeAdapter, type ImageUploadResult } from '../code-adapter'
 import type { Article, AuthResult, SyncResult, PlatformMeta } from '../../types'
 import type { PublishOptions } from '../types'
-import { markdownToHtml } from '../../lib'
 import { createLogger } from '../../lib/logger'
 
 const logger = createLogger('Bilibili')
@@ -25,42 +24,26 @@ export class BilibiliAdapter extends CodeAdapter {
     capabilities: ['article', 'draft', 'image_upload'],
   }
 
+  /** 预处理配置: B站使用 HTML，移除外链 */
+  readonly preprocessConfig = {
+    outputFormat: 'html' as const,
+    removeLinks: true,
+  }
+
   private userInfo: BilibiliUserInfo | null = null
   private csrf: string = ''
-  private headerRuleIds: string[] = []
 
-  /**
-   * 设置动态请求头规则 (CORS)
-   */
-  private async setupHeaderRules(): Promise<void> {
-    if (this.headerRuleIds.length > 0) return
-    if (!this.runtime.headerRules) return
-
-    // api.bilibili.com
-    const ruleId = await this.runtime.headerRules.add({
+  /** B站 API 需要的 Header 规则 */
+  private readonly HEADER_RULES = [
+    {
       urlFilter: '*://api.bilibili.com/*',
       headers: {
         'Origin': 'https://member.bilibili.com',
         'Referer': 'https://member.bilibili.com/',
       },
       resourceTypes: ['xmlhttprequest'],
-    })
-    this.headerRuleIds.push(ruleId)
-
-    logger.debug('Header rules added:', this.headerRuleIds)
-  }
-
-  /**
-   * 清除动态请求头规则
-   */
-  private async clearHeaderRules(): Promise<void> {
-    if (!this.runtime.headerRules) return
-    for (const ruleId of this.headerRuleIds) {
-      await this.runtime.headerRules.remove(ruleId)
-    }
-    this.headerRuleIds = []
-    logger.debug('Header rules cleared')
-  }
+    },
+  ]
 
   async checkAuth(): Promise<AuthResult> {
     try {
@@ -103,10 +86,7 @@ export class BilibiliAdapter extends CodeAdapter {
   }
 
   async publish(article: Article, options?: PublishOptions): Promise<SyncResult> {
-    // 设置请求头规则
-    await this.setupHeaderRules()
-
-    try {
+    return this.withHeaderRules(this.HEADER_RULES, async () => {
       logger.info('Starting publish...')
 
       if (!this.userInfo) {
@@ -120,15 +100,8 @@ export class BilibiliAdapter extends CodeAdapter {
         throw new Error('获取 CSRF token 失败，请刷新页面后重试')
       }
 
-      const rawHtml = article.html || markdownToHtml(article.markdown)
-
-      let content = this.cleanHtml(rawHtml, {
-        removeLinks: true,
-        removeIframes: true,
-        removeSvgImages: true,
-        removeTags: ['qqmusic'],
-        removeAttrs: ['data-reader-unique-id'],
-      })
+      // Use pre-processed HTML content directly
+      let content = article.html || ''
 
       content = await this.processImages(
         content,
@@ -163,22 +136,14 @@ export class BilibiliAdapter extends CodeAdapter {
 
       const draftUrl = `https://member.bilibili.com/platform/upload/text/edit?aid=${res.data.aid}`
 
-      const result = this.createResult(true, {
+      return this.createResult(true, {
         postId: String(res.data.aid),
         postUrl: draftUrl,
         draftOnly: options?.draftOnly ?? true,
       })
-
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return result
-    } catch (error) {
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return this.createResult(false, {
-        error: (error as Error).message,
-      })
-    }
+    }).catch((error) => this.createResult(false, {
+      error: (error as Error).message,
+    }))
   }
 
   protected async uploadImageByUrl(src: string): Promise<ImageUploadResult> {

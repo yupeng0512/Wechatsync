@@ -349,6 +349,30 @@ export function EditorApp() {
         {/* 平台选择栏 */}
         <div className="px-6 py-2 border-t bg-gray-50 flex items-center gap-2 overflow-x-auto">
           <span className="text-sm text-gray-500 flex-shrink-0">选择平台:</span>
+          {/* 全选/全不选按钮 */}
+          <div className="flex items-center gap-1 flex-shrink-0 mr-2">
+            <button
+              onClick={() => {
+                const allIds = authenticatedPlatforms.map(p => p.id)
+                setSelectedPlatforms(new Set(allIds))
+                saveSelectedPlatforms(allIds)
+              }}
+              disabled={status === 'syncing'}
+              className="px-2 py-1 text-xs rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-600 disabled:opacity-50"
+            >
+              全选
+            </button>
+            <button
+              onClick={() => {
+                setSelectedPlatforms(new Set())
+                saveSelectedPlatforms([])
+              }}
+              disabled={status === 'syncing'}
+              className="px-2 py-1 text-xs rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-600 disabled:opacity-50"
+            >
+              全不选
+            </button>
+          </div>
           {authenticatedPlatforms.map(platform => {
             const isSelected = selectedPlatforms.has(platform.id)
             const result = results.find(r => r.platform === platform.id)

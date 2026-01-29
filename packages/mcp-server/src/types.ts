@@ -48,6 +48,7 @@ export interface SyncResult {
   success: boolean
   postId?: string
   postUrl?: string
+  draftOnly?: boolean
   error?: string
   timestamp: number
 }

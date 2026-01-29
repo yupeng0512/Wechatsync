@@ -4,7 +4,6 @@
 import { CodeAdapter, type ImageUploadResult } from '../code-adapter'
 import type { Article, AuthResult, SyncResult, PlatformMeta } from '../../types'
 import type { PublishOptions } from '../types'
-import { htmlToMarkdown, markdownToHtml } from '../../lib'
 import { createLogger } from '../../lib/logger'
 
 const logger = createLogger('CSDN')
@@ -24,67 +23,44 @@ export class CSDNAdapter extends CodeAdapter {
     capabilities: ['article', 'draft', 'image_upload'],
   }
 
+  /** 预处理配置: CSDN 使用 Markdown 格式 */
+  readonly preprocessConfig = {
+    outputFormat: 'markdown' as const,
+  }
+
   private userInfo: CSDNUserInfo | null = null
-  private headerRuleIds: string[] = []
 
   // CSDN API 签名密钥
   private readonly API_KEY = '203803574'
   private readonly API_SECRET = '9znpamsyl2c7cdrr9sas0le9vbc3r6ba'
 
-  /**
-   * 设置动态请求头规则
-   */
-  private async setupHeaderRules(): Promise<void> {
-    if (this.headerRuleIds.length > 0) return
-    if (!this.runtime.headerRules) return
-
-    // bizapi.csdn.net
-    const ruleId1 = await this.runtime.headerRules.add({
+  /** CSDN API 需要的 Header 规则 */
+  private readonly HEADER_RULES = [
+    {
       urlFilter: '*://bizapi.csdn.net/*',
       headers: {
         'Origin': 'https://editor.csdn.net',
         'Referer': 'https://editor.csdn.net/',
       },
       resourceTypes: ['xmlhttprequest'],
-    })
-    this.headerRuleIds.push(ruleId1)
-
-    // imgservice.csdn.net
-    const ruleId2 = await this.runtime.headerRules.add({
+    },
+    {
       urlFilter: '*://imgservice.csdn.net/*',
       headers: {
         'Origin': 'https://editor.csdn.net',
         'Referer': 'https://editor.csdn.net/',
       },
       resourceTypes: ['xmlhttprequest'],
-    })
-    this.headerRuleIds.push(ruleId2)
-
-    // 华为云 OBS
-    const ruleId3 = await this.runtime.headerRules.add({
+    },
+    {
       urlFilter: '*://csdn-img-blog.obs.cn-north-4.myhuaweicloud.com/*',
       headers: {
         'Origin': 'https://editor.csdn.net',
         'Referer': 'https://editor.csdn.net/',
       },
       resourceTypes: ['xmlhttprequest'],
-    })
-    this.headerRuleIds.push(ruleId3)
-
-    logger.debug('Header rules added:', this.headerRuleIds)
-  }
-
-  /**
-   * 清除动态请求头规则
-   */
-  private async clearHeaderRules(): Promise<void> {
-    if (!this.runtime.headerRules) return
-    for (const ruleId of this.headerRuleIds) {
-      await this.runtime.headerRules.remove(ruleId)
-    }
-    this.headerRuleIds = []
-    logger.debug('Header rules cleared')
-  }
+    },
+  ]
 
   async checkAuth(): Promise<AuthResult> {
     try {
@@ -205,10 +181,7 @@ export class CSDNAdapter extends CodeAdapter {
   }
 
   async publish(article: Article, options?: PublishOptions): Promise<SyncResult> {
-    // 设置请求头规则
-    await this.setupHeaderRules()
-
-    try {
+    return this.withHeaderRules(this.HEADER_RULES, async () => {
       logger.info('Starting publish...')
 
       // 1. 确保已登录
@@ -219,20 +192,12 @@ export class CSDNAdapter extends CodeAdapter {
         }
       }
 
-      // 2. 获取 HTML 内容
-      const rawHtml = article.html || markdownToHtml(article.markdown)
+      // Use pre-processed markdown content directly
+      let markdown = article.markdown || ''
 
-      // 3. 清理内容
-      let content = this.cleanHtml(rawHtml, {
-        removeIframes: true,
-        removeSvgImages: true,
-        removeTags: ['qqmusic'],
-        removeAttrs: ['data-reader-unique-id'],
-      })
-
-      // 3. 处理图片
-      content = await this.processImages(
-        content,
+      // Process images in markdown
+      markdown = await this.processImages(
+        markdown,
         (src) => this.uploadImageByUrl(src),
         {
           skipPatterns: ['csdnimg.cn', 'csdn.net'],
@@ -240,10 +205,10 @@ export class CSDNAdapter extends CodeAdapter {
         }
       )
 
-      // 4. HTML 转 Markdown (使用 Turndown)
-      const markdown = htmlToMarkdown(content)
+      // Get HTML content (CSDN API needs both markdown and HTML)
+      const htmlContent = article.html || ''
 
-      // 5. 生成签名并保存文章
+      // Generate signature and save article
       const apiPath = '/blog-console-api/v3/mdeditor/saveArticle'
       const headers = await this.signRequest(apiPath)
 
@@ -256,7 +221,7 @@ export class CSDNAdapter extends CodeAdapter {
           body: JSON.stringify({
             title: article.title,
             markdowncontent: markdown,
-            content: content,
+            content: htmlContent,
             readType: 'public',
             level: 0,
             tags: '',
@@ -294,22 +259,14 @@ export class CSDNAdapter extends CodeAdapter {
       const postId = res.data.id
       const draftUrl = `https://editor.csdn.net/md?articleId=${postId}`
 
-      const result = this.createResult(true, {
+      return this.createResult(true, {
         postId: postId,
         postUrl: draftUrl,
         draftOnly: options?.draftOnly ?? true,
       })
-
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return result
-    } catch (error) {
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return this.createResult(false, {
-        error: (error as Error).message,
-      })
-    }
+    }).catch((error) => this.createResult(false, {
+      error: (error as Error).message,
+    }))
   }
 
   /**
@@ -317,8 +274,7 @@ export class CSDNAdapter extends CodeAdapter {
    * 需要设置动态请求头规则以支持 MCP 调用
    */
   async uploadImage(file: Blob, _filename?: string): Promise<string> {
-    await this.setupHeaderRules()
-    try {
+    return this.withHeaderRules(this.HEADER_RULES, async () => {
       // 转为 data URI 然后调用 uploadImageByUrl
       const dataUri = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader()
@@ -328,9 +284,7 @@ export class CSDNAdapter extends CodeAdapter {
       })
       const result = await this.uploadImageByUrl(dataUri)
       return result.url
-    } finally {
-      await this.clearHeaderRules()
-    }
+    })
   }
 
   /**

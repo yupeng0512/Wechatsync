@@ -4,7 +4,6 @@
 import { CodeAdapter, type ImageUploadResult } from '../code-adapter'
 import type { Article, AuthResult, SyncResult, PlatformMeta } from '../../types'
 import type { PublishOptions } from '../types'
-import { markdownToHtml } from '../../lib'
 import { createLogger } from '../../lib/logger'
 
 const logger = createLogger('Weibo')
@@ -24,52 +23,32 @@ export class WeiboAdapter extends CodeAdapter {
     capabilities: ['article', 'draft', 'image_upload', 'cover'],
   }
 
+  /** 预处理配置: 微博使用 HTML 格式 */
+  readonly preprocessConfig = {
+    outputFormat: 'html' as const,
+  }
+
   private userConfig: WeiboUserConfig | null = null
-  private headerRuleIds: string[] = []
 
-  /**
-   * 设置动态请求头规则 (CORS)
-   */
-  private async setupHeaderRules(): Promise<void> {
-    if (this.headerRuleIds.length > 0) return
-    if (!this.runtime.headerRules) return
-
-    // card.weibo.com
-    const ruleId1 = await this.runtime.headerRules.add({
+  /** 微博 API 需要的 Header 规则 */
+  private readonly HEADER_RULES = [
+    {
       urlFilter: '*://card.weibo.com/*',
       headers: {
         'Origin': 'https://card.weibo.com',
         'Referer': 'https://card.weibo.com/article/v5/editor',
       },
       resourceTypes: ['xmlhttprequest'],
-    })
-    this.headerRuleIds.push(ruleId1)
-
-    // picupload.weibo.com
-    const ruleId2 = await this.runtime.headerRules.add({
+    },
+    {
       urlFilter: '*://picupload.weibo.com/*',
       headers: {
         'Origin': 'https://weibo.com',
         'Referer': 'https://weibo.com/',
       },
       resourceTypes: ['xmlhttprequest'],
-    })
-    this.headerRuleIds.push(ruleId2)
-
-    logger.debug('Header rules added:', this.headerRuleIds)
-  }
-
-  /**
-   * 清除动态请求头规则
-   */
-  private async clearHeaderRules(): Promise<void> {
-    if (!this.runtime.headerRules) return
-    for (const ruleId of this.headerRuleIds) {
-      await this.runtime.headerRules.remove(ruleId)
-    }
-    this.headerRuleIds = []
-    logger.debug('Header rules cleared')
-  }
+    },
+  ]
 
   async checkAuth(): Promise<AuthResult> {
     try {
@@ -133,10 +112,7 @@ export class WeiboAdapter extends CodeAdapter {
   }
 
   async publish(article: Article, options?: PublishOptions): Promise<SyncResult> {
-    // 设置请求头规则
-    await this.setupHeaderRules()
-
-    try {
+    return this.withHeaderRules(this.HEADER_RULES, async () => {
       logger.info('Starting publish...')
 
       const config = await this.getUserConfig()
@@ -144,14 +120,8 @@ export class WeiboAdapter extends CodeAdapter {
         throw new Error('请先登录微博')
       }
 
-      const rawHtml = article.html || markdownToHtml(article.markdown)
-
-      let content = this.cleanHtml(rawHtml, {
-        removeIframes: true,
-        removeSvgImages: true,
-        removeTags: ['qqmusic'],
-        removeAttrs: ['data-reader-unique-id'],
-      })
+      // Use pre-processed HTML content directly
+      let content = article.html || ''
 
       content = content.replace(/>\s+</g, '><')
       content = await this.processWeiboImages(content, options?.onImageProgress)
@@ -246,22 +216,14 @@ export class WeiboAdapter extends CodeAdapter {
 
       const draftUrl = `https://card.weibo.com/article/v5/editor#/draft/${postId}`
 
-      const result = this.createResult(true, {
+      return this.createResult(true, {
         postId: postId,
         postUrl: draftUrl,
         draftOnly: options?.draftOnly ?? true,
       })
-
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return result
-    } catch (error) {
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return this.createResult(false, {
-        error: (error as Error).message,
-      })
-    }
+    }).catch((error) => this.createResult(false, {
+      error: (error as Error).message,
+    }))
   }
 
   private generateReqId(): string {
@@ -389,7 +351,8 @@ export class WeiboAdapter extends CodeAdapter {
     content: string,
     onProgress?: (current: number, total: number) => void
   ): Promise<string> {
-    const processedContent = this.makeImgVisible(content)
+    // Content is pre-processed, use directly
+    const processedContent = content
 
     const figureImgRegex = /<figure[^>]*>[\s\S]*?<img[^>]+src="([^"]+)"[^>]*>[\s\S]*?<\/figure>/gi
     const imgRegex = /<img[^>]+src="([^"]+)"[^>]*>/gi

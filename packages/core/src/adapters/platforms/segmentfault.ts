@@ -13,35 +13,24 @@ export class SegmentfaultAdapter extends CodeAdapter {
     capabilities: ['article', 'draft', 'image_upload'],
   }
 
+  /** 预处理配置: 思否使用 Markdown 格式 */
+  readonly preprocessConfig = {
+    outputFormat: 'markdown' as const,
+  }
+
   private sessionToken: string | null = null
-  private headerRuleId: string | null = null
 
-  /**
-   * 添加 Header 规则
-   */
-  private async addHeaderRules(): Promise<void> {
-    if (!this.runtime.headerRules) return
-
-    this.headerRuleId = await this.runtime.headerRules.add({
+  /** 思否 API 需要的 Header 规则 */
+  private readonly HEADER_RULES = [
+    {
       urlFilter: '*://segmentfault.com/gateway/*',
       headers: {
         Origin: 'https://segmentfault.com',
         Referer: 'https://segmentfault.com/',
       },
-    })
-  }
-
-  /**
-   * 移除 Header 规则
-   */
-  private async removeHeaderRules(): Promise<void> {
-    if (!this.runtime.headerRules) return
-
-    if (this.headerRuleId) {
-      await this.runtime.headerRules.remove(this.headerRuleId)
-      this.headerRuleId = null
-    }
-  }
+      resourceTypes: ['xmlhttprequest'],
+    },
+  ]
 
   /**
    * 检查登录状态
@@ -172,9 +161,7 @@ export class SegmentfaultAdapter extends CodeAdapter {
    */
   async publish(article: Article): Promise<SyncResult> {
     const now = Date.now()
-    try {
-      await this.addHeaderRules()
-
+    return this.withHeaderRules(this.HEADER_RULES, async () => {
       // 获取 session token
       this.sessionToken = await this.getSessionToken()
 
@@ -214,8 +201,6 @@ export class SegmentfaultAdapter extends CodeAdapter {
         throw new Error('发布失败: ' + text)
       }
 
-      await this.removeHeaderRules()
-
       // 处理数组格式响应 [1, "error_message"]
       if (Array.isArray(res)) {
         if (res[0] === 1) {
@@ -249,14 +234,11 @@ export class SegmentfaultAdapter extends CodeAdapter {
         draftOnly: true,
         timestamp: now,
       }
-    } catch (error) {
-      await this.removeHeaderRules()
-      return {
-        platform: this.meta.id,
-        success: false,
-        error: (error as Error).message,
-        timestamp: now,
-      }
-    }
+    }).catch((error) => ({
+      platform: this.meta.id,
+      success: false,
+      error: (error as Error).message,
+      timestamp: now,
+    }))
   }
 }

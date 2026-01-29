@@ -47,35 +47,24 @@ export class Cto51Adapter extends CodeAdapter {
     capabilities: ['article', 'draft', 'image_upload'],
   }
 
+  /** 预处理配置: 51CTO 使用 Markdown 格式 */
+  readonly preprocessConfig = {
+    outputFormat: 'markdown' as const,
+  }
+
   private csrf: string | null = null
-  private headerRuleId: string | null = null
 
-  /**
-   * 添加 Header 规则
-   */
-  private async addHeaderRules(): Promise<void> {
-    if (!this.runtime.headerRules) return
-
-    this.headerRuleId = await this.runtime.headerRules.add({
+  /** 51CTO API 需要的 Header 规则 */
+  private readonly HEADER_RULES = [
+    {
       urlFilter: '*://blog.51cto.com/*',
       headers: {
         Origin: 'https://blog.51cto.com',
         Referer: 'https://blog.51cto.com/blogger/publish',
       },
-    })
-  }
-
-  /**
-   * 移除 Header 规则
-   */
-  private async removeHeaderRules(): Promise<void> {
-    if (!this.runtime.headerRules) return
-
-    if (this.headerRuleId) {
-      await this.runtime.headerRules.remove(this.headerRuleId)
-      this.headerRuleId = null
-    }
-  }
+      resourceTypes: ['xmlhttprequest'],
+    },
+  ]
 
   /**
    * 检查登录状态
@@ -231,9 +220,7 @@ export class Cto51Adapter extends CodeAdapter {
    */
   async publish(article: Article): Promise<SyncResult> {
     const now = Date.now()
-    try {
-      await this.addHeaderRules()
-
+    return this.withHeaderRules(this.HEADER_RULES, async () => {
       // 确保已获取 csrf
       if (!this.csrf) {
         const auth = await this.checkAuth()
@@ -288,8 +275,6 @@ export class Cto51Adapter extends CodeAdapter {
 
       const res = await response.json()
 
-      await this.removeHeaderRules()
-
       if (res.status !== 1 || !res.data) {
         throw new Error(res.msg || '发布失败')
       }
@@ -302,14 +287,11 @@ export class Cto51Adapter extends CodeAdapter {
         draftOnly: true,
         timestamp: now,
       }
-    } catch (error) {
-      await this.removeHeaderRules()
-      return {
-        platform: this.meta.id,
-        success: false,
-        error: (error as Error).message,
-        timestamp: now,
-      }
-    }
+    }).catch((error) => ({
+      platform: this.meta.id,
+      success: false,
+      error: (error as Error).message,
+      timestamp: now,
+    }))
   }
 }

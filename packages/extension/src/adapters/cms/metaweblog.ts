@@ -20,6 +20,7 @@ interface ImageUploadResult {
 
 /**
  * 构建 XML-RPC 请求体
+ * 注意：必须是紧凑格式，不能有多余空白，否则某些 XML-RPC 实现会解析失败
  */
 function buildXmlRpcRequest(method: string, params: unknown[]): string {
   const paramXml = params.map(param => {
@@ -27,7 +28,8 @@ function buildXmlRpcRequest(method: string, params: unknown[]): string {
       return `<param><value><string>${escapeXml(param)}</string></value></param>`
     }
     if (typeof param === 'number') {
-      return `<param><value><int>${param}</int></value></param>`
+      // 使用 i4 而不是 int，兼容性更好
+      return `<param><value><i4>${param}</i4></value></param>`
     }
     if (typeof param === 'boolean') {
       return `<param><value><boolean>${param ? 1 : 0}</boolean></value></param>`
@@ -38,11 +40,8 @@ function buildXmlRpcRequest(method: string, params: unknown[]): string {
     return `<param><value><string>${String(param)}</string></value></param>`
   }).join('')
 
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<methodCall>
-  <methodName>${method}</methodName>
-  <params>${paramXml}</params>
-</methodCall>`
+  // 紧凑格式，与 jQuery xmlrpc 插件一致
+  return `<?xml version="1.0"?><methodCall><methodName>${method}</methodName><params>${paramXml}</params></methodCall>`
 }
 
 function objectToXmlRpcStruct(obj: Record<string, unknown>): string {
@@ -51,7 +50,8 @@ function objectToXmlRpcStruct(obj: Record<string, unknown>): string {
     if (typeof value === 'string') {
       valueXml = `<string>${escapeXml(value)}</string>`
     } else if (typeof value === 'number') {
-      valueXml = `<int>${value}</int>`
+      // 使用 i4 而不是 int，兼容性更好
+      valueXml = `<i4>${value}</i4>`
     } else if (typeof value === 'boolean') {
       valueXml = `<boolean>${value ? 1 : 0}</boolean>`
     } else if (value instanceof Uint8Array) {
@@ -106,12 +106,61 @@ function parseXmlRpcResponse(xml: string): { success: boolean; value?: unknown; 
     return { success: true, value: intMatch[1] }
   }
 
+  // i4 类型（与 int 等价）
+  const i4Match = xml.match(/<i4>([^<]*)<\/i4>/)
+  if (i4Match) {
+    return { success: true, value: i4Match[1] }
+  }
+
   // 检查数组返回 (getUsersBlogs)
   if (xml.includes('<array>') || xml.includes('<struct>')) {
     return { success: true, value: {} }
   }
 
   return { success: true }
+}
+
+/**
+ * 从 XML 响应中提取最新文章的 postid
+ */
+function extractLatestPostId(xml: string): string | null {
+  // 匹配第一个 postid 字段
+  const postIdMatch = xml.match(/<name>postid<\/name>\s*<value>(?:<string>)?([^<]+)(?:<\/string>)?<\/value>/)
+  return postIdMatch ? postIdMatch[1] : null
+}
+
+/**
+ * 获取最新文章 ID（用于 Typecho 返回 0 的情况）
+ */
+async function getLatestPostId(
+  credentials: MetaWeblogCredentials,
+  endpoint: string
+): Promise<string | null> {
+  try {
+    const body = buildXmlRpcRequest('metaWeblog.getRecentPosts', [
+      0, // blogId
+      credentials.username,
+      credentials.password,
+      1, // 只获取最新 1 篇
+    ])
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/xml',
+      },
+      body,
+    })
+
+    if (!response.ok) {
+      return null
+    }
+
+    const xml = await response.text()
+    return extractLatestPostId(xml)
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -176,13 +225,21 @@ export async function uploadImage(
   const endpoint = getEndpoint(credentials)
 
   try {
-    const mediaObject = {
+    const mediaObject: Record<string, unknown> = {
       name: filename,
       type: mimeType,
+      // 同时发送 bits 和 bytes，提高兼容性
+      // - 标准 MetaWeblog 使用 bits
+      // - Typecho 使用 bytes
       bits: imageData,
+      bytes: imageData,
     }
 
-    const body = buildXmlRpcRequest('wp.uploadFile', [
+    // 统一使用 metaWeblog.newMediaObject（标准 MetaWeblog API）
+    // WordPress 也支持此 API，兼容性更好
+    const methodName = 'metaWeblog.newMediaObject'
+
+    const body = buildXmlRpcRequest(methodName, [
       0, // blogId
       credentials.username,
       credentials.password,
@@ -523,14 +580,15 @@ export async function uploadTypechoImage(
   const endpoint = credentials.url.replace(/\/$/, '') + '/action/xmlrpc'
 
   try {
-    // Typecho 使用 wp.uploadFile，参数用 bytes 而不是 bits
+    // 同时发送 bits 和 bytes，提高兼容性
     const mediaObject = {
       name: filename,
       type: mimeType,
+      bits: imageData,
       bytes: imageData,
     }
 
-    const body = buildXmlRpcRequest('wp.uploadFile', [
+    const body = buildXmlRpcRequest('metaWeblog.newMediaObject', [
       0, // blogId
       credentials.username,
       credentials.password,
@@ -577,8 +635,9 @@ export async function testTypechoConnection(credentials: MetaWeblogCredentials):
   const endpoint = credentials.url.replace(/\/$/, '') + '/action/xmlrpc'
 
   try {
-    // 使用 wp.getUsersBlogs 测试连接（和旧版保持一致）
-    const body = buildXmlRpcRequest('wp.getUsersBlogs', [
+    // 使用 metaWeblog.getUsersBlogs 测试连接（MetaWeblog 标准 API）
+    const body = buildXmlRpcRequest('metaWeblog.getUsersBlogs', [
+      '', // appKey (MetaWeblog 标准参数，通常为空)
       credentials.username,
       credentials.password,
     ])
@@ -618,12 +677,15 @@ export async function publishToTypecho(
 ): Promise<{ success: boolean; postId?: string; postUrl?: string; error?: string }> {
   const endpoint = credentials.url.replace(/\/$/, '') + '/action/xmlrpc'
 
+  // Typecho 使用 /action/xmlrpc 端点，设置到 credentials 供图片上传使用
+  const typechoCredentials = { ...credentials, endpoint }
+
   try {
     // 如果启用图片处理，先处理文章中的图片
     let content = article.content
     if (options?.processImages !== false) {
       logger.debug(' Processing images before publish...')
-      content = await processArticleImages(credentials, content, options?.onImageProgress, options?.signal)
+      content = await processArticleImages(typechoCredentials, content, options?.onImageProgress, options?.signal)
     }
 
     // Typecho 使用 metaWeblog.newPost，参数格式和旧版保持一致
@@ -660,9 +722,27 @@ export async function publishToTypecho(
       return { success: false, error: result.error }
     }
 
-    const postId = String(result.value)
+    let postId = String(result.value)
     const baseUrl = credentials.url.replace(/\/$/, '')
-    const postUrl = `${baseUrl}?p=${postId}`
+
+    // Typecho 的 metaWeblog.newPost 可能返回 0，尝试查询最新文章获取真实 ID
+    if (!postId || postId === '0') {
+      logger.debug('Typecho returned postId=0, fetching latest post...')
+      const latestId = await getLatestPostId(credentials, endpoint)
+      if (latestId) {
+        postId = latestId
+        logger.debug(`Got latest postId: ${postId}`)
+      }
+    }
+
+    let postUrl: string
+    if (postId && postId !== '0') {
+      // Typecho 编辑页面 URL 格式
+      postUrl = `${baseUrl}/admin/write-post.php?cid=${postId}`
+    } else {
+      // 回退到草稿管理页面
+      postUrl = `${baseUrl}/admin/manage-posts.php`
+    }
 
     return { success: true, postId, postUrl }
   } catch (error) {

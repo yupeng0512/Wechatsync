@@ -22,6 +22,11 @@ export class JianshuAdapter extends CodeAdapter {
     capabilities: ['article', 'draft', 'image_upload', 'categories'],
   }
 
+  /** 预处理配置: 简书使用 HTML 格式 */
+  readonly preprocessConfig = {
+    outputFormat: 'html' as const,
+  }
+
   private defaultNotebookId: number | null = null
 
   async checkAuth(): Promise<AuthResult> {
@@ -117,22 +122,14 @@ export class JianshuAdapter extends CodeAdapter {
       const draftId = createData.id
       logger.debug('Draft created:', draftId)
 
-      // 3. 获取 HTML 内容
-      const rawHtml = article.html || article.markdown
+      // Use pre-processed HTML content directly
+      let content = article.html || ''
 
-      // 4. 清理 HTML
-      let content = this.cleanHtml(rawHtml, {
-        removeIframes: true,
-        removeSvgImages: true,
-        removeTags: ['mpprofile', 'qqmusic'],
-        removeAttrs: ['data-reader-unique-id'],
-      })
-
-      // 5. 简书特定处理：移除空段落、移除尾部 br
+      // Jianshu-specific: remove empty paragraphs, remove trailing br
       content = content.replace(/<p>\s*<\/p>/gi, '')
       content = content.replace(/<br\s*\/?>\s*$/gi, '')
 
-      // 6. 处理图片
+      // Process images
       content = await this.processImages(
         content,
         (src) => this.uploadImageByUrl(src),

@@ -16,6 +16,7 @@
 import { extractArticle as extractWithReader, ReaderResult } from '../lib/reader'
 import { htmlToMarkdownNative } from '@wechatsync/core'
 import { createLogger } from '../lib/logger'
+import { preprocessContentDOM } from '../lib/content-processor'
 
 const logger = createLogger('Extractor')
 
@@ -61,7 +62,7 @@ function extractWeixinArticle(): ExtractedArticle | null {
 
   // 克隆内容元素，预处理（图片、代码块等）
   const clonedContent = contentEl.cloneNode(true) as HTMLElement
-  preprocessContent(clonedContent)
+  preprocessContentDOM(clonedContent)
 
   // 获取 HTML 并转换为 Markdown
   const html = clonedContent.innerHTML
@@ -78,80 +79,6 @@ function extractWeixinArticle(): ExtractedArticle | null {
       platform: 'weixin',
     },
   }
-}
-
-/**
- * 处理懒加载图片
- * 微信等平台使用懒加载，真实 URL 在 data-src 等属性中
- */
-function processLazyImages(container: HTMLElement) {
-  const images = container.querySelectorAll('img')
-
-  images.forEach((img) => {
-    // 按优先级查找真实图片 URL
-    const realSrc =
-      img.getAttribute('data-src') ||
-      img.getAttribute('data-original') ||
-      img.getAttribute('data-actualsrc') ||
-      img.getAttribute('_src') ||
-      img.src
-
-    // 跳过 data URL (SVG 占位符等)
-    if (realSrc && !realSrc.startsWith('data:image/svg')) {
-      img.setAttribute('src', realSrc)
-    }
-
-    // 清理懒加载属性
-    img.removeAttribute('data-src')
-    img.removeAttribute('data-original')
-    img.removeAttribute('data-actualsrc')
-    img.removeAttribute('_src')
-    img.removeAttribute('data-ratio')
-    img.removeAttribute('data-w')
-    img.removeAttribute('data-type')
-    img.removeAttribute('data-s')
-  })
-}
-
-/**
- * 处理代码块（使用 DOM，等价旧版 processDocCode）
- * 将复杂的代码块转换为简单的 <pre><code>纯文本</code></pre>
- */
-function processCodeBlocks(container: HTMLElement) {
-  const pres = container.querySelectorAll('pre')
-
-  pres.forEach((pre) => {
-    try {
-      // 获取纯文本内容（DOM 的 innerText 会正确处理换行）
-      const text = pre.innerText || pre.textContent || ''
-
-      // 转义 HTML 特殊字符
-      const escapedText = text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;')
-
-      // 替换内容为简单的 <code> 结构
-      pre.innerHTML = `<code>${escapedText}</code>`
-
-      // 清理 pre 上的多余属性
-      pre.removeAttribute('class')
-      pre.removeAttribute('style')
-      pre.removeAttribute('data-lang')
-    } catch (e) {
-      logger.error('processCodeBlocks error:', e)
-    }
-  })
-}
-
-/**
- * 预处理内容（在提取时统一处理）
- */
-function preprocessContent(container: HTMLElement) {
-  processLazyImages(container)
-  processCodeBlocks(container)
 }
 
 /**
@@ -177,7 +104,7 @@ function readerResultToArticle(result: ReaderResult): ExtractedArticle {
   // 创建临时 DOM 进行预处理
   const tempDiv = document.createElement('div')
   tempDiv.innerHTML = result.content
-  preprocessContent(tempDiv)
+  preprocessContentDOM(tempDiv)
   const processedHtml = tempDiv.innerHTML
 
   // 转换为 Markdown
@@ -234,7 +161,7 @@ function extractWithSelectors(): ExtractedArticle | null {
     if (el?.innerHTML) {
       // 克隆并预处理
       const clonedContent = el.cloneNode(true) as HTMLElement
-      preprocessContent(clonedContent)
+      preprocessContentDOM(clonedContent)
       html = clonedContent.innerHTML
       break
     }

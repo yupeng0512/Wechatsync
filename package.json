@@ -12,6 +12,7 @@
     "build:core": "yarn workspace @wechatsync/core build",
     "build:extension": "yarn workspace @wechatsync/extension build",
     "build:mcp": "yarn workspace @wechatsync/mcp-server build",
+    "build:cli": "yarn workspace @wechatsync/cli build",
     "mcp": "yarn workspace @wechatsync/mcp-server start",
     "test": "yarn workspaces run test",
     "lint": "eslint packages --ext .ts,.tsx",

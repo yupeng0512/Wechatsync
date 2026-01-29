@@ -5,14 +5,22 @@
  * - 第一个实例启动 WebSocket 服务器 + HTTP API
  * - 后续实例通过 HTTP API 转发请求
  */
-import { WebSocketServer, WebSocket } from 'ws'
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import wsModule from 'ws'
 import http from 'http'
 import type { RequestMessage, ResponseMessage } from './types.js'
 
+// 兼容 CJS 和 ESM 打包
+const WsModule = wsModule as any
+// ESM: WebSocketServer, CJS: Server
+const WebSocketServer = WsModule.WebSocketServer || WsModule.Server || WsModule.default?.WebSocketServer || WsModule.default?.Server
+// WebSocket 状态常量 (readyState: 1 = OPEN)
+const WS_OPEN = 1
+
 export class ExtensionBridge {
-  private wss: WebSocketServer | null = null
+  private wss: any = null
   private httpServer: http.Server | null = null
-  private client: WebSocket | null = null
+  private client: any = null
   private isServerMode = false
   private pendingRequests = new Map<string, {
     resolve: (value: unknown) => void
@@ -20,15 +28,22 @@ export class ExtensionBridge {
     timeout: NodeJS.Timeout
   }>()
   private requestTimeout = 360000 // 6 minutes (图片多时需要更长时间)
+  private connectionResolvers: Array<() => void> = []
 
-  // 安全验证 token（从环境变量读取）
-  private token: string = process.env.MCP_TOKEN || ''
+  // 安全验证 token（从环境变量读取，优先使用 WECHATSYNC_TOKEN）
+  private token: string = process.env.WECHATSYNC_TOKEN || process.env.MCP_TOKEN || ''
 
-  constructor(private port: number = 9527) {
-    if (this.token) {
-      console.error('[Bridge] Token authentication enabled')
-    } else {
-      console.error('[Bridge] Warning: MCP_TOKEN not set, requests may be rejected by extension')
+  // 是否静默模式（CLI 使用时不输出日志）
+  private silent: boolean = false
+
+  constructor(private port: number = 9527, options?: { silent?: boolean }) {
+    this.silent = options?.silent ?? false
+    if (!this.silent) {
+      if (this.token) {
+        console.error('[Bridge] Token authentication enabled')
+      } else {
+        console.error('[Bridge] Warning: MCP_TOKEN not set, requests may be rejected by extension')
+      }
     }
   }
 
@@ -39,11 +54,11 @@ export class ExtensionBridge {
     try {
       await this.startServer()
       this.isServerMode = true
-      console.error(`[Bridge] Running as PRIMARY (WebSocket: ${this.port}, HTTP: ${this.port + 1})`)
+      if (!this.silent) console.error(`[Bridge] Running as PRIMARY (WebSocket: ${this.port}, HTTP: ${this.port + 1})`)
     } catch (error: unknown) {
       if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
         this.isServerMode = false
-        console.error(`[Bridge] Running as SECONDARY (forwarding to localhost:${this.port + 1})`)
+        if (!this.silent) console.error(`[Bridge] Running as SECONDARY (forwarding to localhost:${this.port + 1})`)
       } else {
         throw error
       }
@@ -59,32 +74,38 @@ export class ExtensionBridge {
         this.wss = new WebSocketServer({ port: this.port })
 
         this.wss.on('listening', () => {
-          console.error(`[Bridge] WebSocket server listening on port ${this.port}`)
+          if (!this.silent) console.error(`[Bridge] WebSocket server listening on port ${this.port}`)
           // WebSocket 启动成功后，启动 HTTP API
           this.startHttpApi()
             .then(resolve)
             .catch(reject)
         })
 
-        this.wss.on('connection', (ws) => {
-          console.error('[Bridge] Extension connected')
+        this.wss.on('connection', (ws: any) => {
+          if (!this.silent) console.error('[Bridge] Extension connected')
           this.client = ws
 
-          ws.on('message', (data) => {
+          // 通知等待连接的 Promise
+          for (const resolver of this.connectionResolvers) {
+            resolver()
+          }
+          this.connectionResolvers = []
+
+          ws.on('message', (data: any) => {
             this.handleMessage(data.toString())
           })
 
           ws.on('close', () => {
-            console.error('[Bridge] Extension disconnected')
+            if (!this.silent) console.error('[Bridge] Extension disconnected')
             this.client = null
           })
 
-          ws.on('error', (error) => {
-            console.error('[Bridge] WebSocket error:', error)
+          ws.on('error', (error: Error) => {
+            if (!this.silent) console.error('[Bridge] WebSocket error:', error)
           })
         })
 
-        this.wss.on('error', (error) => {
+        this.wss.on('error', (error: Error) => {
           reject(error)
         })
       } catch (error) {
@@ -142,7 +163,7 @@ export class ExtensionBridge {
 
       const httpPort = this.port + 1
       this.httpServer.listen(httpPort, () => {
-        console.error(`[Bridge] HTTP API listening on port ${httpPort}`)
+        if (!this.silent) console.error(`[Bridge] HTTP API listening on port ${httpPort}`)
         resolve()
       })
 
@@ -169,11 +190,35 @@ export class ExtensionBridge {
    */
   isConnected(): boolean {
     if (this.isServerMode) {
-      return this.client !== null && this.client.readyState === WebSocket.OPEN
+      return this.client !== null && this.client.readyState === WS_OPEN
     } else {
       // 客户端模式：无法同步检查，返回 true 让实际请求时验证
       return true
     }
+  }
+
+  /**
+   * 等待 Extension 连接
+   */
+  waitForConnection(timeoutMs: number = 60000): Promise<void> {
+    if (this.isConnected()) {
+      return Promise.resolve()
+    }
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        const index = this.connectionResolvers.indexOf(resolve)
+        if (index > -1) {
+          this.connectionResolvers.splice(index, 1)
+        }
+        reject(new Error('timeout'))
+      }, timeoutMs)
+
+      this.connectionResolvers.push(() => {
+        clearTimeout(timeout)
+        resolve()
+      })
+    })
   }
 
   /**
@@ -238,7 +283,7 @@ export class ExtensionBridge {
    * 直接通过 WebSocket 发送请求（服务器模式）
    */
   private async requestInternal<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
-    if (!this.client || this.client.readyState !== WebSocket.OPEN) {
+    if (!this.client || this.client.readyState !== WS_OPEN) {
       throw new Error('Extension not connected. Please ensure the Chrome extension is running.')
     }
 

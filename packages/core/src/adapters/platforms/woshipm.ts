@@ -4,7 +4,6 @@
 import { CodeAdapter, type ImageUploadResult } from '../code-adapter'
 import type { Article, AuthResult, SyncResult, PlatformMeta } from '../../types'
 import type { PublishOptions } from '../types'
-import { processHtml } from '../../lib'
 import { createLogger } from '../../lib/logger'
 
 const logger = createLogger('Woshipm')
@@ -18,60 +17,32 @@ export class WoshipmAdapter extends CodeAdapter {
     capabilities: ['article', 'draft', 'image_upload'],
   }
 
-  private headerRuleIds: string[] = []
+  /** 预处理配置: 人人都是产品经理使用 HTML 格式 */
+  readonly preprocessConfig = {
+    outputFormat: 'html' as const,
+    removeEmptyLines: true,
+  }
+
   private jltoken: string = ''
 
-  /**
-   * 设置动态请求头规则
-   */
-  private async setupHeaderRules(): Promise<void> {
-    if (this.headerRuleIds.length > 0) return
-    if (!this.runtime.headerRules) return
-
-    // woshipm.com/wp-admin/admin-ajax.php
-    const ruleId1 = await this.runtime.headerRules.add({
+  /** 人人都是产品经理 API 需要的 Header 规则 */
+  private readonly HEADER_RULES = [
+    {
       urlFilter: '*://woshipm.com/wp-admin/admin-ajax.php*',
-      headers: {
-        'X-Requested-With': 'XMLHttpRequest',
-      },
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
       resourceTypes: ['xmlhttprequest'],
-    })
-    this.headerRuleIds.push(ruleId1)
-
-    // woshipm.com/api2/
-    const ruleId2 = await this.runtime.headerRules.add({
+    },
+    {
       urlFilter: '*://woshipm.com/api2/*',
-      headers: {
-        'X-Requested-With': 'XMLHttpRequest',
-      },
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
       resourceTypes: ['xmlhttprequest'],
-    })
-    this.headerRuleIds.push(ruleId2)
-
-    // woshipm.com/tensorflow/upyun/upload (图片上传)
-    const ruleId3 = await this.runtime.headerRules.add({
+    },
+    {
       urlFilter: '*://woshipm.com/tensorflow/upyun/upload*',
-      headers: {
-        'X-Requested-With': 'XMLHttpRequest',
-      },
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
       resourceTypes: ['xmlhttprequest'],
-    })
-    this.headerRuleIds.push(ruleId3)
-
-    logger.debug('Header rules added:', this.headerRuleIds)
-  }
-
-  /**
-   * 清除动态请求头规则
-   */
-  private async clearHeaderRules(): Promise<void> {
-    if (!this.runtime.headerRules) return
-    for (const ruleId of this.headerRuleIds) {
-      await this.runtime.headerRules.remove(ruleId)
-    }
-    this.headerRuleIds = []
-    logger.debug('Header rules cleared')
-  }
+    },
+  ]
 
   async checkAuth(): Promise<AuthResult> {
     try {
@@ -138,27 +109,14 @@ export class WoshipmAdapter extends CodeAdapter {
   }
 
   async publish(article: Article, options?: PublishOptions): Promise<SyncResult> {
-    // 设置请求头规则
-    await this.setupHeaderRules()
-
-    try {
+    return this.withHeaderRules(this.HEADER_RULES, async () => {
       logger.info('Starting publish...')
 
-      // 1. 获取 HTML 内容并处理
-      const rawHtml = article.html || article.markdown
+      // 1. 使用预处理好的 HTML（Content Script 已处理代码块、图片、特殊标签等）
+      // 人人都是产品经理使用 HTML 格式
+      let content = article.html || ''
 
-      // 2. HTML 预处理
-      let content = processHtml(rawHtml, {
-        removeComments: true,
-        removeSpecialTags: true,
-        processCodeBlocks: true,
-        removeEmptyLines: true,
-        removeDataAttributes: true,
-        removeSrcset: true,
-        removeSizes: true,
-      })
-
-      // 3. 处理图片
+      // 2. 处理图片
       content = await this.processImages(
         content,
         (src) => this.uploadImageByUrl(src),
@@ -210,22 +168,14 @@ export class WoshipmAdapter extends CodeAdapter {
 
       logger.debug('Draft created:', draftId)
 
-      const result = this.createResult(true, {
+      return this.createResult(true, {
         postId: draftId,
         postUrl: draftUrl,
         draftOnly: options?.draftOnly ?? true,
       })
-
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return result
-    } catch (error) {
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return this.createResult(false, {
-        error: (error as Error).message,
-      })
-    }
+    }).catch((error) => this.createResult(false, {
+      error: (error as Error).message,
+    }))
   }
 
   /**

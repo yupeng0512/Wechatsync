@@ -5,7 +5,7 @@ import { CodeAdapter, type ImageUploadResult } from '../code-adapter'
 import type { Article, AuthResult, SyncResult, PlatformMeta } from '../../types'
 import type { DoubanImageData } from '../../lib'
 import type { PublishOptions } from '../types'
-import { htmlToMarkdown, markdownToHtml, markdownToDraft } from '../../lib'
+import { markdownToDraft } from '../../lib'
 import { createLogger } from '../../lib/logger'
 
 const logger = createLogger('Douban')
@@ -30,43 +30,27 @@ export class DoubanAdapter extends CodeAdapter {
     capabilities: ['article', 'draft', 'image_upload'],
   }
 
+  /** 预处理配置: 豆瓣使用 Markdown 格式 (转换为 Draft.js) */
+  readonly preprocessConfig = {
+    outputFormat: 'markdown' as const,
+  }
+
   private username: string = ''
   private avatar: string = ''
   private formData: DoubanFormData | null = null
   private postParams: DoubanPostParams | null = null
-  private headerRuleIds: string[] = []
 
-  /**
-   * 设置动态请求头规则 (CORS)
-   */
-  private async setupHeaderRules(): Promise<void> {
-    if (this.headerRuleIds.length > 0) return
-    if (!this.runtime.headerRules) return
-
-    const ruleId = await this.runtime.headerRules.add({
+  /** 豆瓣 API 需要的 Header 规则 */
+  private readonly HEADER_RULES = [
+    {
       urlFilter: '*://www.douban.com/*',
       headers: {
         'Origin': 'https://www.douban.com',
         'Referer': 'https://www.douban.com',
       },
       resourceTypes: ['xmlhttprequest'],
-    })
-    this.headerRuleIds.push(ruleId)
-
-    logger.debug('Header rules added:', this.headerRuleIds)
-  }
-
-  /**
-   * 清除动态请求头规则
-   */
-  private async clearHeaderRules(): Promise<void> {
-    if (!this.runtime.headerRules) return
-    for (const ruleId of this.headerRuleIds) {
-      await this.runtime.headerRules.remove(ruleId)
-    }
-    this.headerRuleIds = []
-    logger.debug('Header rules cleared')
-  }
+    },
+  ]
 
   async checkAuth(): Promise<AuthResult> {
     try {
@@ -134,10 +118,7 @@ export class DoubanAdapter extends CodeAdapter {
   }
 
   async publish(article: Article, options?: PublishOptions): Promise<SyncResult> {
-    // 设置请求头规则
-    await this.setupHeaderRules()
-
-    try {
+    return this.withHeaderRules(this.HEADER_RULES, async () => {
       logger.info('Starting publish...')
 
       // 1. 确保已登录
@@ -148,18 +129,10 @@ export class DoubanAdapter extends CodeAdapter {
         }
       }
 
-      // 2. 获取 HTML 内容
-      const rawHtml = article.html || markdownToHtml(article.markdown)
+      // Use pre-processed markdown content directly
+      let content = article.markdown || ''
 
-      // 3. 清理内容
-      let content = this.cleanHtml(rawHtml, {
-        removeIframes: true,
-        removeSvgImages: true,
-        removeTags: ['qqmusic'],
-        removeAttrs: ['data-reader-unique-id'],
-      })
-
-      // 3. 处理图片 - 收集完整图片数据
+      // Process images - collect full image data
       const imageDataMap = new Map<string, DoubanImageData>()
       content = await this.processImages(
         content,
@@ -175,11 +148,8 @@ export class DoubanAdapter extends CodeAdapter {
         }
       )
 
-      // 4. HTML 转 Markdown
-      const markdown = htmlToMarkdown(content)
-
-      // 5. Markdown 转 Draft.js 格式 (传入图片数据)
-      const draftContent = markdownToDraft(markdown, imageDataMap)
+      // Markdown to Draft.js format (pass in image data)
+      const draftContent = markdownToDraft(content, imageDataMap)
 
       // 6. 保存草稿
       const response = await this.runtime.fetch(
@@ -213,22 +183,14 @@ export class DoubanAdapter extends CodeAdapter {
       // 豆瓣草稿只能在 /note/create 页面查看
       const draftUrl = 'https://www.douban.com/note/create'
 
-      const result = this.createResult(true, {
+      return this.createResult(true, {
         postId: this.formData!.note_id,
         postUrl: draftUrl,
         draftOnly: options?.draftOnly ?? true,
       })
-
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return result
-    } catch (error) {
-      // 清除请求头规则
-      await this.clearHeaderRules()
-      return this.createResult(false, {
-        error: (error as Error).message,
-      })
-    }
+    }).catch((error) => this.createResult(false, {
+      error: (error as Error).message,
+    }))
   }
 
   /**
