@@ -46,6 +46,7 @@ import {
   OschinaAdapter,
   SegmentfaultAdapter,
   CnblogsAdapter,
+  ZipDownloadAdapter,
 } from '@wechatsync/core'
 
 // 私有适配器 - 通过 glob 动态加载（文件不存在时为空对象，不会报错）
@@ -104,6 +105,7 @@ const ADAPTER_CLASSES: AdapterConstructor[] = [
   OschinaAdapter,
   SegmentfaultAdapter,
   CnblogsAdapter,
+  ZipDownloadAdapter,
   ...getPrivateAdapters(),
 ]
 
@@ -425,9 +427,21 @@ export async function syncToPlatform(
   }
 
   try {
+    // 使用平台特定的预处理内容（如果有）
+    let platformArticle = article
+    const platformContents = (article as any).platformContents as Record<string, { html: string; markdown: string }> | undefined
+    if (platformContents?.[platformId]) {
+      const content = platformContents[platformId]
+      platformArticle = {
+        ...article,
+        html: content.html,
+        markdown: content.markdown,
+      }
+    }
+
     // 默认只保存草稿，带超时保护
     return await withTimeout(
-      adapter.publish(article, {
+      adapter.publish(platformArticle, {
         draftOnly: options?.draftOnly ?? true,
         onImageProgress: onImageProgress
           ? (current: number, total: number) => onImageProgress(platformId, current, total)

@@ -4,7 +4,7 @@
  */
 import { createLogger } from '../lib/logger'
 import { htmlToMarkdownNative } from '@wechatsync/core'
-import { preprocessContentString } from '../lib/content-processor'
+import { preprocessContentString, backupAndSimplifyCodeBlocks, restoreCodeBlocks } from '../lib/content-processor'
 
 const logger = createLogger('WeixinEditor')
 
@@ -916,9 +916,13 @@ async function extractArticle(): Promise<any | null> {
       try {
         const frame = document.querySelector(sel) as HTMLIFrameElement
         if (frame?.contentDocument?.body) {
-          const html = frame.contentDocument.body.innerHTML
-          if (html && html.trim() && html.trim() !== '<p><br></p>' && html.length > 10) {
-            content = html
+          const body = frame.contentDocument.body
+          const testHtml = body.innerHTML
+          if (testHtml && testHtml.trim() && testHtml.trim() !== '<p><br></p>' && testHtml.length > 10) {
+            // 在 iframe 的真实 DOM 上简化代码块
+            const codeBlockBackups = backupAndSimplifyCodeBlocks(body)
+            content = body.innerHTML
+            restoreCodeBlocks(codeBlockBackups)
             logger.debug('Content found via iframe:', sel)
             break
           }
@@ -935,7 +939,10 @@ async function extractArticle(): Promise<any | null> {
       for (const sel of containerSelectors) {
         const el = document.querySelector(sel)
         if (el?.innerHTML && el.innerHTML.trim().length > 10) {
+          // 在真实 DOM 上简化代码块
+          const codeBlockBackups = backupAndSimplifyCodeBlocks(el)
           content = el.innerHTML
+          restoreCodeBlocks(codeBlockBackups)
           logger.debug('Content found via container:', sel)
           break
         }

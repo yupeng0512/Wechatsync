@@ -7,9 +7,6 @@ export * from './runtime'
 // Adapters
 export * from './adapters'
 
-// Sync Engine
-export * from './sync'
-
 // AI (placeholder)
 export * from './ai'
 

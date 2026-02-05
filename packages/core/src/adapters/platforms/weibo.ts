@@ -5,6 +5,7 @@ import { CodeAdapter, type ImageUploadResult } from '../code-adapter'
 import type { Article, AuthResult, SyncResult, PlatformMeta } from '../../types'
 import type { PublishOptions } from '../types'
 import { createLogger } from '../../lib/logger'
+import { parseMarkdownImages } from '../../lib/markdown-images'
 
 const logger = createLogger('Weibo')
 
@@ -371,9 +372,8 @@ export class WeiboAdapter extends CodeAdapter {
       }
     }
 
-    const mdImgRegex = /!\[([^\]]*)\]\(([^)]+)\)/g
-    while ((match = mdImgRegex.exec(processedContent)) !== null) {
-      matches.push({ full: match[0], src: match[2], hasFigure: false })
+    for (const mdMatch of parseMarkdownImages(processedContent)) {
+      matches.push({ full: mdMatch.full, src: mdMatch.src, hasFigure: false })
     }
 
     if (matches.length === 0) {
@@ -462,9 +462,16 @@ export class WeiboAdapter extends CodeAdapter {
         data?: Array<{ pid: string; url: string; task_status_code: number }>
       }
 
-      if (res.data?.[0]?.task_status_code === 1) {
-        logger.debug('Image upload complete:', res.data[0])
-        return res.data[0]
+      const item = res.data?.[0]
+      const statusCode = item?.task_status_code
+      if (statusCode === 1 && item) {
+        logger.debug('Image upload complete:', item)
+        return item
+      }
+
+      if (statusCode === 2) {
+        // task_status_code === 2 表示失败，不要继续轮询
+        throw new Error('图片上传失败')
       }
 
       await this.delay(1000)

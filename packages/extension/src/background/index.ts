@@ -6,6 +6,7 @@ import {
   getAllPlatformMetas,
   cancelSync,
   getAdapter,
+  getPlatformPreprocessConfigs,
   type SyncDetailProgress,
 } from '../adapters'
 import * as wordpressAdapter from '../adapters/cms/wordpress'
@@ -141,6 +142,7 @@ type MessageAction =
   | { type: 'UPLOAD_IMAGE'; payload: { src: string; platform?: string } }
   | { type: 'MAGIC_CALL'; payload: { methodName: string; data: any } }
   | { type: 'CLEAR_UPDATE_BADGE' }
+  | { type: 'GET_PREPROCESS_CONFIGS'; platforms: string[] }
 
 /**
  * 消息处理
@@ -229,6 +231,37 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
       const dslPlatformIds = platforms.filter((id: string) => !cmsAccountIds.has(id))
       const cmsPlatformIds = platforms.filter((id: string) => cmsAccountIds.has(id))
 
+      // 如果没有 platformContents，请求 content script 预处理
+      let processedArticle = article
+      if (!article.platformContents && dslPlatformIds.length > 0) {
+        try {
+          const configs = getPlatformPreprocessConfigs(dslPlatformIds)
+          const rawHtml = article.html || article.content || ''
+          if (rawHtml) {
+            // 获取目标 tabId：优先使用 sender tab，否则获取当前活动标签页
+            let targetTabId = senderTabId
+            if (!targetTabId) {
+              const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true })
+              targetTabId = activeTab?.id
+            }
+
+            if (targetTabId) {
+              const response = await chrome.tabs.sendMessage(targetTabId, {
+                type: 'PREPROCESS_FOR_PLATFORMS',
+                payload: { rawHtml, platforms: dslPlatformIds, configs },
+              })
+              if (response?.platformContents) {
+                processedArticle = { ...article, platformContents: response.platformContents }
+                logger.debug('Preprocessed for platforms:', Object.keys(response.platformContents))
+              }
+            }
+          }
+        } catch (error) {
+          // 预处理失败，继续使用原始内容
+          logger.debug('Preprocess failed, using original content:', error)
+        }
+      }
+
       // 初始化同步状态（保存完整文章信息）
       const syncState: ActiveSyncState = {
         syncId,
@@ -255,7 +288,7 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
 
       // 同步到 DSL 平台
       if (dslPlatformIds.length > 0) {
-        await syncToMultiplePlatforms(dslPlatformIds, article, {
+        await syncToMultiplePlatforms(dslPlatformIds, processedArticle, {
           onResult: (result) => {
             // 更新持久化状态
             const resultWithName = {
@@ -922,6 +955,13 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
       await chrome.action.setBadgeText({ text: '' })
       logger.info('Update badge cleared')
       return { success: true }
+    }
+
+    case 'GET_PREPROCESS_CONFIGS': {
+      // 获取平台预处理配置（供 content script 使用）
+      await initAdapters()
+      const configs = getPlatformPreprocessConfigs(message.platforms)
+      return { configs }
     }
 
     default:

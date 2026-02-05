@@ -174,6 +174,29 @@ export class ExtensionRuntime implements RuntimeInterface {
   }
 
   /**
+   * 文件下载
+   * Service Worker 中不支持 URL.createObjectURL，使用 data URL 替代
+   */
+  downloads = {
+    async download(blob: Blob, filename: string, saveAs = true): Promise<number> {
+      // 将 Blob 转换为 data URL
+      const buffer = await blob.arrayBuffer()
+      const base64 = btoa(
+        new Uint8Array(buffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
+      )
+      const mimeType = blob.type || 'application/octet-stream'
+      const dataUrl = `data:${mimeType};base64,${base64}`
+
+      const downloadId = await chrome.downloads.download({
+        url: dataUrl,
+        filename,
+        saveAs,
+      })
+      return downloadId
+    },
+  }
+
+  /**
    * Tab 管理
    */
   tabs = {

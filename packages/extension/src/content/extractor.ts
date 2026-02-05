@@ -14,9 +14,9 @@
  */
 
 import { extractArticle as extractWithReader, ReaderResult } from '../lib/reader'
-import { htmlToMarkdownNative } from '@wechatsync/core'
+import { htmlToMarkdownNative, type PreprocessConfig } from '@wechatsync/core'
 import { createLogger } from '../lib/logger'
-import { preprocessContentDOM } from '../lib/content-processor'
+import { preprocessContentDOM, preprocessForPlatform, backupAndSimplifyCodeBlocks, restoreCodeBlocks, type PreprocessResult } from '../lib/content-processor'
 
 const logger = createLogger('Extractor')
 
@@ -60,24 +60,37 @@ function extractWeixinArticle(): ExtractedArticle | null {
     return null
   }
 
-  // 克隆内容元素，预处理（图片、代码块等）
-  const clonedContent = contentEl.cloneNode(true) as HTMLElement
-  preprocessContentDOM(clonedContent)
+  // 在原始 DOM 上简化代码块（innerText 只在真实 DOM 上正确工作）
+  const codeBlockBackups = backupAndSimplifyCodeBlocks(contentEl)
 
-  // 获取 HTML 并转换为 Markdown
-  const html = clonedContent.innerHTML
-  const markdown = htmlToMarkdownNative(html)
+  try {
+    // 克隆内容元素（此时代码块已经是简化后的纯文本）
+    const clonedContent = contentEl.cloneNode(true) as HTMLElement
 
-  return {
-    title,
-    markdown,
-    html, // 保留原始 HTML，微信平台需要
-    summary: summary || undefined,
-    cover: cover || undefined,
-    source: {
-      url: window.location.href,
-      platform: 'weixin',
-    },
+    // 恢复原始 DOM（尽早恢复，避免影响页面显示）
+    restoreCodeBlocks(codeBlockBackups)
+
+    // 预处理克隆的内容
+    preprocessContentDOM(clonedContent)
+
+    // 获取 HTML 并转换为 Markdown
+    const html = clonedContent.innerHTML
+    const markdown = htmlToMarkdownNative(html)
+
+    return {
+      title,
+      markdown,
+      html, // 保留原始 HTML，微信平台需要
+      summary: summary || undefined,
+      cover: cover || undefined,
+      source: {
+        url: window.location.href,
+        platform: 'weixin',
+      },
+    }
+  } catch (e) {
+    restoreCodeBlocks(codeBlockBackups)
+    throw e
   }
 }
 
@@ -159,11 +172,23 @@ function extractWithSelectors(): ExtractedArticle | null {
   for (const selector of selectors.content) {
     const el = document.querySelector(selector)
     if (el?.innerHTML) {
-      // 克隆并预处理
-      const clonedContent = el.cloneNode(true) as HTMLElement
-      preprocessContentDOM(clonedContent)
-      html = clonedContent.innerHTML
-      break
+      // 在原始 DOM 上简化代码块
+      const codeBlockBackups = backupAndSimplifyCodeBlocks(el)
+
+      try {
+        // 克隆并预处理
+        const clonedContent = el.cloneNode(true) as HTMLElement
+
+        // 恢复原始 DOM
+        restoreCodeBlocks(codeBlockBackups)
+
+        preprocessContentDOM(clonedContent)
+        html = clonedContent.innerHTML
+        break
+      } catch (e) {
+        restoreCodeBlocks(codeBlockBackups)
+        throw e
+      }
     }
   }
 
@@ -297,6 +322,40 @@ function closeEditor() {
 }
 
 /**
+ * 为多个平台预处理内容
+ * @param rawHtml 原始 HTML
+ * @param platformIds 平台 ID 列表
+ * @param configs 各平台的预处理配置
+ * @returns 各平台的预处理结果
+ */
+function preprocessForMultiplePlatformsLocal(
+  rawHtml: string,
+  platformIds: string[],
+  configs: Record<string, PreprocessConfig>
+): Record<string, PreprocessResult> {
+  const results: Record<string, PreprocessResult> = {}
+
+  for (const platformId of platformIds) {
+    const config = configs[platformId]
+    if (config) {
+      results[platformId] = preprocessForPlatform(rawHtml, config)
+    } else {
+      // 没有配置的平台使用默认处理
+      const tempDiv = document.createElement('div')
+      tempDiv.innerHTML = rawHtml
+      preprocessContentDOM(tempDiv)
+      const html = tempDiv.innerHTML
+      results[platformId] = {
+        html,
+        markdown: htmlToMarkdownNative(html),
+      }
+    }
+  }
+
+  return results
+}
+
+/**
  * 监听编辑器消息
  */
 window.addEventListener('message', async (event) => {
@@ -307,23 +366,39 @@ window.addEventListener('message', async (event) => {
       closeEditor()
     } else if (data.type === 'START_SYNC') {
       // 转发同步请求到 background
-      // 编辑器传来的是 HTML content，需要转换为 markdown
-      const htmlContent = data.article.content || ''
-      const markdownContent = htmlToMarkdownNative(htmlContent)
+      // 编辑器传来的是 HTML content
+      const rawHtml = data.article.content || ''
+      const platforms: string[] = data.platforms || []
+
+      // 从 background 获取各平台的预处理配置
+      const configResponse = await chrome.runtime.sendMessage({
+        type: 'GET_PREPROCESS_CONFIGS',
+        platforms,
+      })
+
+      const configs: Record<string, PreprocessConfig> = configResponse?.configs || {}
+
+      // 为每个平台分别预处理
+      const platformContents = preprocessForMultiplePlatformsLocal(rawHtml, platforms, configs)
+
+      logger.debug('Preprocessed contents for platforms:', Object.keys(platformContents))
 
       chrome.runtime.sendMessage({
         type: 'START_SYNC_FROM_EDITOR',
         article: {
           ...data.article,
-          html: htmlContent,
-          markdown: markdownContent,
+          // 保留一份默认内容（兼容）
+          html: rawHtml,
+          markdown: htmlToMarkdownNative(rawHtml),
+          // 各平台专属预处理内容
+          platformContents,
         },
-        platforms: data.platforms,
+        platforms,
         syncId: data.syncId,  // 转发 syncId
       })
     }
   } catch (e) {
-    // ignore
+    logger.error('Error handling editor message:', e)
   }
 })
 
@@ -344,6 +419,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     } else {
       sendResponse({ success: false, error: '无法提取文章内容' })
     }
+  } else if (message.type === 'PREPROCESS_FOR_PLATFORMS') {
+    // 为多个平台预处理内容（由 background 调用）
+    const { rawHtml, platforms, configs } = message.payload as {
+      rawHtml: string
+      platforms: string[]
+      configs: Record<string, PreprocessConfig>
+    }
+    const platformContents = preprocessForMultiplePlatformsLocal(rawHtml, platforms, configs)
+    sendResponse({ platformContents })
   } else if (message.type === 'SYNC_PROGRESS') {
     // 转发同步进度到编辑器（带上 syncId）
     editorIframe?.contentWindow?.postMessage(JSON.stringify({

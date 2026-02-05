@@ -4,7 +4,7 @@
  */
 
 import { htmlToMarkdownNative } from '@wechatsync/core'
-import { preprocessContentDOM } from '../lib/content-processor'
+import { preprocessContentDOM, backupAndSimplifyCodeBlocks, restoreCodeBlocks } from '../lib/content-processor'
 
 ;(() => {
 interface Platform {
@@ -870,25 +870,39 @@ function extractWeixinArticle() {
     return null
   }
 
-  // 克隆内容元素，预处理（图片、代码块等）
-  const clonedContent = contentEl.cloneNode(true) as HTMLElement
-  preprocessContentDOM(clonedContent)
+  // 在原始 DOM 上简化代码块（innerText 只在真实 DOM 上正确工作）
+  const codeBlockBackups = backupAndSimplifyCodeBlocks(contentEl)
 
-  // 转换 HTML 为 Markdown（用于 markdown 优先的平台）
-  const htmlContent = clonedContent.innerHTML
-  const markdown = htmlToMarkdownNative(htmlContent)
+  try {
+    // 克隆内容元素（此时代码块已经是简化后的纯文本）
+    const clonedContent = contentEl.cloneNode(true) as HTMLElement
 
-  return {
-    title,
-    html: htmlContent,
-    content: htmlContent,
-    markdown,
-    summary: summary || undefined,
-    cover: cover || undefined,
-    source: {
-      url: window.location.href,
-      platform: 'weixin',
-    },
+    // 恢复原始 DOM（尽早恢复，避免影响页面显示）
+    restoreCodeBlocks(codeBlockBackups)
+
+    // 预处理克隆的内容（图片、链接等，代码块已经处理过了）
+    preprocessContentDOM(clonedContent)
+
+    // 转换 HTML 为 Markdown（用于 markdown 优先的平台）
+    const htmlContent = clonedContent.innerHTML
+    const markdown = htmlToMarkdownNative(htmlContent)
+
+    return {
+      title,
+      html: htmlContent,
+      content: htmlContent,
+      markdown,
+      summary: summary || undefined,
+      cover: cover || undefined,
+      source: {
+        url: window.location.href,
+        platform: 'weixin',
+      },
+    }
+  } catch (e) {
+    // 确保异常时也恢复原始 DOM
+    restoreCodeBlocks(codeBlockBackups)
+    throw e
   }
 }
 

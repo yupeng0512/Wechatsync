@@ -124,6 +124,16 @@ async function updateBadge(state: ActiveSyncState | null) {
         await chrome.action.setBadgeText({ text: '' })
       }
     }, 8000)
+  } else if (state.status === 'failed' || state.status === 'cancelled') {
+    await chrome.action.setBadgeText({ text: '!' })
+    await chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS.error })
+
+    setTimeout(async () => {
+      const storage = await chrome.storage.local.get(SYNC_STATE_KEY)
+      if (storage[SYNC_STATE_KEY]?.status === 'failed' || storage[SYNC_STATE_KEY]?.status === 'cancelled') {
+        await chrome.action.setBadgeText({ text: '' })
+      }
+    }, 8000)
   }
 }
 
@@ -227,6 +237,7 @@ export async function performSync(
   const { onResult, onImageProgress, onDetailProgress } = callbacks
 
   const allPlatformMetas = getAllPlatformMetas()
+  const platformNameById = new Map(allPlatformMetas.map(meta => [meta.id, meta.name]))
   const syncId = generateSyncId()
 
   // 规范化文章对象，确保必需字段有默认值
@@ -277,7 +288,7 @@ export async function performSync(
       onResult: (result) => {
         const resultWithName: SyncResult = {
           ...result,
-          platformName: allPlatformMetas.find(p => p.id === result.platform)?.name || result.platform,
+          platformName: platformNameById.get(result.platform) || result.platform,
         }
         syncState.results.push(resultWithName)
         allResults.push(resultWithName)
@@ -297,7 +308,20 @@ export async function performSync(
   // 同步到 CMS 账户
   for (const accountId of cmsPlatformIds) {
     const account = cmsAccounts.find((a: any) => a.id === accountId)
-    if (!account) continue
+    if (!account) {
+      const cmsResult: SyncResult = {
+        platform: accountId,
+        platformName: platformNameById.get(accountId) || accountId,
+        success: false,
+        error: 'CMS 账户不存在',
+      }
+      allResults.push(cmsResult)
+      syncState.results.push(cmsResult)
+      saveSyncState(syncState).catch(() => {})
+      onResult?.(cmsResult)
+      onDetailProgress?.({ platform: accountId, platformName: cmsResult.platformName || accountId, stage: 'failed', error: cmsResult.error })
+      continue
+    }
 
     onDetailProgress?.({ platform: accountId, platformName: account.name, stage: 'starting' })
 
@@ -375,7 +399,12 @@ export async function performSync(
   // 确定最终状态
   const successCount = allResults.filter(r => r.success).length
   const failedCount = allResults.length - successCount
-  const finalStatus: SyncHistoryStatus = failedCount === allResults.length ? 'failed' : 'completed'
+  const finalStatus: SyncHistoryStatus =
+    allResults.length === 0 && platforms.length > 0
+      ? 'failed'
+      : failedCount === allResults.length && allResults.length > 0
+        ? 'failed'
+        : 'completed'
 
   // 更新为完成状态
   syncState.status = finalStatus

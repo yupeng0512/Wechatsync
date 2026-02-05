@@ -24,6 +24,7 @@ import type { Article, AuthResult, SyncResult, PlatformMeta, HeaderRule } from '
 import type { RuntimeInterface } from '../runtime/interface'
 import type { PlatformAdapter, PublishOptions } from './types'
 import { createLogger } from '../lib/logger'
+import { parseMarkdownImages } from '../lib/markdown-images'
 
 const logger = createLogger('CodeAdapter')
 
@@ -242,9 +243,8 @@ export abstract class CodeAdapter implements PlatformAdapter {
     }
 
     // 2. Markdown 格式: ![alt](url)
-    const mdImgRegex = /!\[([^\]]*)\]\(([^)]+)\)/g
-    while ((match = mdImgRegex.exec(content)) !== null) {
-      matches.push({ full: match[0], src: match[2], alt: match[1], type: 'markdown' })
+    for (const mdMatch of parseMarkdownImages(content)) {
+      matches.push({ full: mdMatch.full, src: mdMatch.src, alt: mdMatch.alt, type: 'markdown' })
     }
 
     if (matches.length === 0) {

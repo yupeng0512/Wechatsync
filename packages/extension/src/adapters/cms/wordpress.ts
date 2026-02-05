@@ -2,6 +2,7 @@
  * WordPress XML-RPC 适配器
  */
 import { createLogger } from '../../lib/logger'
+import { parseMarkdownImages } from '@wechatsync/core'
 
 const logger = createLogger('WordPress')
 
@@ -371,9 +372,8 @@ export async function processArticleImages(
   }
 
   // 同时处理 Markdown 图片
-  const mdImgRegex = /!\[([^\]]*)\]\(([^)]+)\)/g
-  while ((match = mdImgRegex.exec(content)) !== null) {
-    matches.push({ full: match[0], src: match[2] })
+  for (const mdMatch of parseMarkdownImages(content)) {
+    matches.push({ full: mdMatch.full, src: mdMatch.src })
   }
 
   if (matches.length === 0) {

@@ -136,12 +136,101 @@ function processLinks(container: HTMLElement): void {
 }
 
 /**
- * KaTeX 备份信息
+ * 元素备份信息
  */
-interface KatexBackup {
+interface ElementBackup {
   element: Element
   originalHTML: string
 }
+
+/**
+ * 转义 HTML 特殊字符
+ */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+}
+
+/**
+ * 临时简化页面中的代码块，返回备份以便恢复
+ * 使用真实 DOM 提取代码（保留换行）
+ */
+function backupAndReplaceCodeBlocks(): ElementBackup[] {
+  const backups: ElementBackup[] = []
+
+  // 行号元素选择器
+  const GUTTER_SELECTORS = [
+    '.gutter',
+    '.line-numbers-rows',
+    '.hljs-ln-numbers',
+    '.code-snippet__line-index',
+    '[class*="line-number"]',
+    '[class*="lineNumber"]',
+  ].join(', ')
+
+  document.querySelectorAll('pre').forEach((pre) => {
+    // 临时隐藏行号元素
+    const gutterEls = pre.querySelectorAll(GUTTER_SELECTORS)
+    gutterEls.forEach(el => (el as HTMLElement).style.display = 'none')
+
+    // 优先从 code 元素提取
+    const code = pre.querySelector('code')
+    const targetEl = (code || pre) as HTMLElement
+
+    // 检测 code 内是否有块级嵌套（非法结构，会导致 innerText 产生额外换行）
+    // - div: expressive-code 等
+    // - code[style*="display: block"]: 微信代码块（多个 block code）
+    const hasNestedBlock = code && (
+      code.querySelector('div') ||
+      code.querySelector('code[style*="display: block"], code[style*="display:block"]')
+    )
+
+    const text = targetEl.innerText
+
+    // 恢复行号显示
+    gutterEls.forEach(el => (el as HTMLElement).style.display = '')
+
+    // 跳过空代码块
+    if (!text.trim()) return
+
+    // 清理首尾空白
+    let cleanedText = text.replace(/^\n+/, '').replace(/\n+$/, '')
+
+    // 如果有非法嵌套的块级元素，清理连续空行（块级边界会产生额外换行）
+    if (hasNestedBlock) {
+      cleanedText = cleanedText.replace(/\n{2,}/g, '\n')
+    }
+
+    logger.debug('[Reader CodeBlock] original:', pre.innerHTML.slice(0, 100))
+    logger.debug('[Reader CodeBlock] cleaned text:', cleanedText.slice(0, 100))
+
+    backups.push({
+      element: pre,
+      originalHTML: pre.innerHTML,
+    })
+
+    // 替换为纯文本
+    pre.innerHTML = `<code>${escapeHtml(cleanedText)}</code>`
+  })
+
+  return backups
+}
+
+/**
+ * 恢复页面中被简化的代码块
+ */
+function restoreCodeBlocks(backups: ElementBackup[]): void {
+  backups.forEach(({ element, originalHTML }) => {
+    element.innerHTML = originalHTML
+  })
+}
+
+// KaTeX 备份信息（类型别名）
+type KatexBackup = ElementBackup
 
 /**
  * Unicode 希腊字母转 LaTeX 命令
@@ -311,7 +400,8 @@ function processKatex(container: HTMLElement): void {
  * 使用 Safari ReaderArticleFinder 提取
  */
 function extractWithSafariReader(): ReaderResult | null {
-  // 临时替换页面中的 KaTeX 为纯文本（Reader 处理后会恢复）
+  // 临时替换页面中的代码块和 KaTeX 为纯文本（Reader 处理后会恢复）
+  const codeBlockBackup = backupAndReplaceCodeBlocks()
   const katexBackup = backupAndReplaceKatex()
 
   try {
@@ -319,12 +409,14 @@ function extractWithSafariReader(): ReaderResult | null {
 
     if (!reader.isReaderModeAvailable()) {
       restoreKatex(katexBackup)
+      restoreCodeBlocks(codeBlockBackup)
       return null
     }
 
     const articleNode = reader.adoptableArticle(true)
     if (!articleNode) {
       restoreKatex(katexBackup)
+      restoreCodeBlocks(codeBlockBackup)
       return null
     }
 
@@ -333,8 +425,9 @@ function extractWithSafariReader(): ReaderResult | null {
     processLazyImages(cloned)
     processLinks(cloned)
 
-    // 恢复原始页面的 KaTeX
+    // 恢复原始页面
     restoreKatex(katexBackup)
+    restoreCodeBlocks(codeBlockBackup)
 
     return {
       title: reader.articleTitle() || document.title,
@@ -351,6 +444,7 @@ function extractWithSafariReader(): ReaderResult | null {
   } catch (e) {
     // 确保异常时也恢复页面
     restoreKatex(katexBackup)
+    restoreCodeBlocks(codeBlockBackup)
     logger.error('Safari ReaderArticleFinder error:', e)
     return null
   }
@@ -360,21 +454,28 @@ function extractWithSafariReader(): ReaderResult | null {
  * 使用 Mozilla Readability 提取
  */
 function extractWithReadability(): ReaderResult | null {
+  // 临时替换页面中的代码块和 KaTeX 为纯文本
+  const codeBlockBackup = backupAndReplaceCodeBlocks()
+  const katexBackup = backupAndReplaceKatex()
+
   try {
-    // Readability 需要克隆的 document
+    // Readability 需要克隆的 document（此时代码块已是纯文本）
     const docClone = document.cloneNode(true) as Document
     const reader = new Readability(docClone)
     const article = reader.parse()
+
+    // 恢复原始页面
+    restoreKatex(katexBackup)
+    restoreCodeBlocks(codeBlockBackup)
 
     if (!article) {
       return null
     }
 
-    // 处理内容中的图片和公式
+    // 处理内容中的图片
     const container = document.createElement('div')
     container.innerHTML = article.content
     processLazyImages(container)
-    processKatex(container)
     processLinks(container)
 
     // 获取首图
@@ -394,6 +495,9 @@ function extractWithReadability(): ReaderResult | null {
       extractor: 'readability',
     }
   } catch (e) {
+    // 确保异常时也恢复页面
+    restoreKatex(katexBackup)
+    restoreCodeBlocks(codeBlockBackup)
     logger.error('Readability error:', e)
     return null
   }
@@ -408,24 +512,39 @@ function extractWithArticleTag(): ReaderResult | null {
     return null
   }
 
-  const cloned = articleEl.cloneNode(true) as HTMLElement
-  processLazyImages(cloned)
-  processKatex(cloned)
-  processLinks(cloned)
+  // 临时替换页面中的代码块和 KaTeX 为纯文本
+  const codeBlockBackup = backupAndReplaceCodeBlocks()
+  const katexBackup = backupAndReplaceKatex()
 
-  const firstImg = cloned.querySelector('img')
-  const leadingImage = firstImg?.src || undefined
+  try {
+    const cloned = articleEl.cloneNode(true) as HTMLElement
+    processLazyImages(cloned)
+    processLinks(cloned)
 
-  const description = document.querySelector('meta[name="description"]')?.getAttribute('content')
+    // 恢复原始页面
+    restoreKatex(katexBackup)
+    restoreCodeBlocks(codeBlockBackup)
 
-  return {
-    title: document.title,
-    content: cloned.outerHTML,
-    textContent: cloned.textContent || undefined,
-    excerpt: description || undefined,
-    leadingImage,
-    mainImage: leadingImage,
-    extractor: 'article-tag',
+    const firstImg = cloned.querySelector('img')
+    const leadingImage = firstImg?.src || undefined
+
+    const description = document.querySelector('meta[name="description"]')?.getAttribute('content')
+
+    return {
+      title: document.title,
+      content: cloned.outerHTML,
+      textContent: cloned.textContent || undefined,
+      excerpt: description || undefined,
+      leadingImage,
+      mainImage: leadingImage,
+      extractor: 'article-tag',
+    }
+  } catch (e) {
+    // 确保异常时也恢复页面
+    restoreKatex(katexBackup)
+    restoreCodeBlocks(codeBlockBackup)
+    logger.error('ArticleTag error:', e)
+    return null
   }
 }
 

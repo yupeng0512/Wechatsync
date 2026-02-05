@@ -23,7 +23,7 @@ export class OschinaAdapter extends CodeAdapter {
   /** 开源中国 API 需要的 Header 规则 */
   private readonly HEADER_RULES = [
     {
-      urlFilter: '*://my.oschina.net/u/*',
+      urlFilter: '*://apiv1.oschina.net/oschinapi/*',
       headers: {
         Origin: 'https://my.oschina.net',
         Referer: 'https://my.oschina.net/',
@@ -37,53 +37,35 @@ export class OschinaAdapter extends CodeAdapter {
    */
   async checkAuth(): Promise<AuthResult> {
     try {
-      const response = await this.runtime.fetch('https://www.oschina.net/blog', {
+      const response = await this.runtime.fetch('https://apiv1.oschina.net/oschinapi/user/myDetails', {
         credentials: 'include',
       })
-      const html = await response.text()
+      const data = await response.json() as {
+        success: boolean
+        result?: {
+          userId: number
+          userVo?: {
+            name: string
+            portraitUrl: string
+          }
+        }
+      }
 
-      // 解析用户信息 - 匹配 current-user-avatar 元素
-      const userIdMatch = html.match(/current-user-avatar[^>]*data-user-id="(\d+)"/)
-      const avatarMatch = html.match(/current-user-avatar[^>]*>[\s\S]*?<img[^>]*src="([^"]+)"/)
-      const nicknameMatch = html.match(/current-user-avatar[^>]*title="([^"]+)"/)
-
-      if (!userIdMatch) {
+      if (!data.success || !data.result?.userId) {
         return { isAuthenticated: false, error: '未登录' }
       }
 
-      this.userId = userIdMatch[1]
+      this.userId = String(data.result.userId)
 
       return {
         isAuthenticated: true,
         userId: this.userId,
-        username: nicknameMatch?.[1] || this.userId,
-        avatar: avatarMatch?.[1],
+        username: data.result.userVo?.name || this.userId,
+        avatar: data.result.userVo?.portraitUrl,
       }
     } catch (error) {
       return { isAuthenticated: false, error: (error as Error).message }
     }
-  }
-
-  /**
-   * 获取用户 token
-   */
-  private async getUserToken(): Promise<string> {
-    if (!this.userId) {
-      throw new Error('未登录')
-    }
-
-    const response = await this.runtime.fetch(
-      `https://my.oschina.net/u/${this.userId}/blog/write`,
-      { credentials: 'include' }
-    )
-    const html = await response.text()
-
-    const tokenMatch = html.match(/data-name="g_user_code"[^>]*data-value="([^"]+)"/)
-    if (!tokenMatch) {
-      throw new Error('获取 token 失败')
-    }
-
-    return tokenMatch[1]
   }
 
   /**
@@ -97,13 +79,14 @@ export class OschinaAdapter extends CodeAdapter {
     // 下载图片
     const imageResponse = await this.runtime.fetch(url)
     const blob = await imageResponse.blob()
+    const filename = this.getFilenameFromUrl(url) || 'image'
 
     // 构建 FormData
     const formData = new FormData()
-    formData.append('editormd-image-file', blob)
+    formData.append('file', blob, filename)
 
     const response = await this.runtime.fetch(
-      `https://my.oschina.net/u/${this.userId}/space/markdown_img_upload`,
+      'https://apiv1.oschina.net/oschinapi/ai/creation/project/uploadDetail',
       {
         method: 'POST',
         credentials: 'include',
@@ -111,13 +94,27 @@ export class OschinaAdapter extends CodeAdapter {
       }
     )
 
-    const res = await response.json()
-
-    if (!res.url) {
-      throw new Error('图片上传失败')
+    const res = await response.json() as {
+      success?: boolean
+      result?: string
+      message?: string
     }
 
-    return { url: res.url }
+    if (!res.success || !res.result) {
+      throw new Error(res.message || '图片上传失败')
+    }
+
+    return { url: res.result }
+  }
+
+  private getFilenameFromUrl(url: string): string | null {
+    try {
+      const pathname = new URL(url).pathname
+      const name = pathname.split('/').pop()
+      return name && name.trim() ? name : null
+    } catch {
+      return null
+    }
   }
 
   /**
@@ -135,48 +132,45 @@ export class OschinaAdapter extends CodeAdapter {
         }
       }
 
-      // 获取 user token
-      const userToken = await this.getUserToken()
+      const rawMarkdown = article.markdown || ''
+      const rawHtml = article.html || ''
+      const useMarkdown = rawMarkdown.trim().length > 0
 
-      // 优先使用 markdown，处理图片
-      let content = article.markdown || article.html || ''
+      let content = useMarkdown ? rawMarkdown : rawHtml
       content = await this.processImages(content, (src) => this.uploadImageByUrl(src))
 
       const response = await this.runtime.fetch(
-        `https://my.oschina.net/u/${this.userId}/blog/save_draft`,
+        'https://apiv1.oschina.net/oschinapi/api/draft/save_draft',
         {
           method: 'POST',
           credentials: 'include',
           headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
+            'Content-Type': 'application/json',
           },
-          body: new URLSearchParams({
-            draft: '0',
-            id: '',
-            user_code: userToken,
+          body: JSON.stringify({
             title: article.title,
-            content: content,
-            content_type: '3', // 3=markdown, 4=html
-            catalog: '6680617',
-            groups: '28',
-            type: '1',
-            origin_url: '',
-            privacy: '0',
-            deny_comment: '0',
-            as_top: '0',
-            downloadImg: '1',
-            isRecommend: '0',
+            user: Number(this.userId),
+            content,
+            contentType: useMarkdown ? 1 : 2, // 1=markdown, 2=html
+            catalog: 0,
+            originUrl: '',
+            privacy: true,
+            disableComment: false,
           }),
         }
       )
 
-      const res = await response.json()
+      const res = await response.json() as {
+        success?: boolean
+        message?: string
+        result?: { id?: number }
+      }
 
-      if (res.code !== 1) {
+      if (!res.success || !res.result?.id) {
         throw new Error(res.message || '发布失败')
       }
 
-      const draftId = res.result.draft
+      const draftId = String(res.result.id)
 
       return {
         platform: this.meta.id,

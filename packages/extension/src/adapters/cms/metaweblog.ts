@@ -3,6 +3,7 @@
  * 支持 Typecho 等兼容 MetaWeblog 的博客系统
  */
 import { createLogger } from '../../lib/logger'
+import { parseMarkdownImages } from '@wechatsync/core'
 
 const logger = createLogger('MetaWeblog')
 
@@ -441,9 +442,8 @@ export async function processArticleImages(
     matches.push({ full: match[0], src: match[1] })
   }
 
-  const mdImgRegex = /!\[([^\]]*)\]\(([^)]+)\)/g
-  while ((match = mdImgRegex.exec(content)) !== null) {
-    matches.push({ full: match[0], src: match[2] })
+  for (const mdMatch of parseMarkdownImages(content)) {
+    matches.push({ full: mdMatch.full, src: mdMatch.src })
   }
 
   if (matches.length === 0) {

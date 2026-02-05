@@ -90,6 +90,7 @@ function copyStaticFilesPlugin() {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, __dirname, '')
+  const isDev = mode === 'development'
   return {
     plugins: [
       react(),
@@ -100,6 +101,9 @@ export default defineConfig(({ mode }) => {
     define: {
       'import.meta.env.VITE_GA_MEASUREMENT_ID': JSON.stringify(env.VITE_GA_MEASUREMENT_ID || ''),
       'import.meta.env.VITE_GA_API_SECRET': JSON.stringify(env.VITE_GA_API_SECRET || ''),
+      // 开发模式下覆盖 PROD 标志，让 logger 输出 debug 日志
+      'import.meta.env.PROD': JSON.stringify(!isDev),
+      'import.meta.env.DEV': JSON.stringify(isDev),
     },
   resolve: {
     alias: {
@@ -108,6 +112,9 @@ export default defineConfig(({ mode }) => {
     },
   },
   build: {
+    // 开发模式: 不压缩，生成 sourcemap
+    minify: isDev ? false : 'esbuild',
+    sourcemap: isDev ? 'inline' : false,
     rollupOptions: {
       input: {
         popup: resolve(__dirname, 'src/popup/index.html'),

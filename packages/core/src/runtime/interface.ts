@@ -59,6 +59,20 @@ export interface RuntimeInterface {
   }
 
   /**
+   * 文件下载（仅扩展环境支持）
+   */
+  downloads?: {
+    /**
+     * 下载文件
+     * @param blob 文件内容
+     * @param filename 文件名
+     * @param saveAs 是否弹出保存对话框
+     * @returns 下载 ID
+     */
+    download(blob: Blob, filename: string, saveAs?: boolean): Promise<number>
+  }
+
+  /**
    * Tab 管理（仅扩展环境支持）
    */
   tabs?: {

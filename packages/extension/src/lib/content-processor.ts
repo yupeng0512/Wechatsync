@@ -32,11 +32,18 @@ export interface PreprocessResult {
  * @param rawHtml 原始 HTML
  * @param config 平台的预处理配置
  * @returns 处理后的 html 和 markdown
+ *
+ * 注意：代码块应在入口处用 backupAndSimplifyCodeBlocks 在原始 DOM 上预处理，
+ * 此函数中的 processCodeBlocks 会跳过已处理的代码块（有 data-code-simplified 标记）
  */
 export function preprocessForPlatform(rawHtml: string, config: PreprocessConfig): PreprocessResult {
   // 创建临时 DOM 容器
   const container = document.createElement('div')
   container.innerHTML = rawHtml
+
+  if (config.processCodeBlocks) {
+    processCodeBlocks(container)
+  }
 
   // 按配置执行预处理
   if (config.removeComments) {
@@ -76,10 +83,6 @@ export function preprocessForPlatform(rawHtml: string, config: PreprocessConfig)
 
   if (config.processLazyImages) {
     processLazyImages(container)
-  }
-
-  if (config.processCodeBlocks) {
-    processCodeBlocks(container)
   }
 
   if (config.removeEmptyElements) {
@@ -135,7 +138,6 @@ export function preprocessForPlatform(rawHtml: string, config: PreprocessConfig)
 
   // 总是生成 markdown，确保需要 markdown 的适配器能获取到内容
   const markdown = htmlToMarkdownNative(html)
-
   return { html, markdown }
 }
 
@@ -316,6 +318,90 @@ function removeLineNumberSiblings(pre: Element): void {
 }
 
 /**
+ * 可作为代码行容器的标签
+ * 这些标签通常用于包裹单行代码
+ */
+const LINE_CONTAINER_TAGS = new Set(['CODE', 'DIV', 'SPAN', 'P', 'LI'])
+
+/**
+ * 检查子元素是否构成有效的"多行结构"
+ *
+ * 有效多行结构的特征：
+ * 1. 至少2个子元素
+ * 2. 全是同一类型的标签（CODE/DIV/SPAN/P/LI）
+ * 3. 或者全是 display:block 的元素
+ *
+ * 无效情况（应使用 innerText）：
+ * - 混合类型（如 br + span + text）
+ * - 少于2个子元素
+ * - 子元素是 BR 等非容器标签
+ */
+function isValidLineStructure(children: Element[]): boolean {
+  if (children.length < 2) return false
+
+  const firstTag = children[0].tagName
+
+  // BR 不是有效的行容器
+  if (firstTag === 'BR') return false
+
+  // 检查是否全是同一类型的行容器标签
+  if (LINE_CONTAINER_TAGS.has(firstTag)) {
+    return children.every(child => child.tagName === firstTag)
+  }
+
+  // 检查是否全是 display:block 的元素（某些高亮库用自定义标签）
+  const allBlock = children.every(child => {
+    const style = child.getAttribute('style') || ''
+    return style.includes('display:block') || style.includes('display: block')
+  })
+
+  return allBlock
+}
+
+/**
+ * 递归查找包含代码行的容器
+ *
+ * 支持的格式：
+ * - <pre><code>L1</code><code>L2</code></pre> (微信公众号)
+ * - <pre><code><code>L1</code><code>L2</code></code></pre> (嵌套code)
+ * - <pre><code><div>L1</div><div>L2</div></code></pre> (expressive-code)
+ * - <pre><code><span style="display:block">L1</span>...</code></pre> (某些高亮库)
+ *
+ * 不匹配的格式（返回 null，使用 innerText）：
+ * - <pre><code>text<br>text</code></pre> (br换行)
+ * - <pre><code>text\ntext</code></pre> (纯文本)
+ * - <pre><code>text<span>...</span>text</code></pre> (混合内联)
+ *
+ * @param el 起始元素
+ * @param depth 当前递归深度
+ * @returns 包含多行子元素的容器，或 null
+ */
+function findLinesContainer(el: Element, depth: number): Element | null {
+  if (depth > 4) return null
+
+  const children = Array.from(el.children)
+
+  // 检查当前元素是否是有效的多行容器
+  if (isValidLineStructure(children)) {
+    return el
+  }
+
+  // 只有一个子元素，继续向下递归
+  if (children.length === 1) {
+    return findLinesContainer(children[0], depth + 1)
+  }
+
+  return null
+}
+
+/**
+ * 查找包含代码行的容器（入口函数）
+ */
+function findCodeLinesContainer(pre: Element): Element | null {
+  return findLinesContainer(pre, 0)
+}
+
+/**
  * 处理代码块
  * 使用 DOM 的 innerText 自动解码 HTML 实体
  * 处理微信等平台将每行代码放在单独标签的情况
@@ -335,28 +421,34 @@ function processCodeBlocks(container: HTMLElement): void {
 
   pres.forEach((pre) => {
     try {
+      // 跳过已经被 backupAndSimplifyCodeBlocks 处理过的代码块
+      if (pre.hasAttribute('data-code-simplified')) {
+        return
+      }
+
       // 2. 再用结构检测移除未知的行号元素（通用方案）
       removeLineNumberSiblings(pre)
 
-      const codeElements = pre.querySelectorAll('code')
+      // 查找代码行容器
+      const linesContainer = findCodeLinesContainer(pre)
+
+      logger.debug('[processCodeBlocks] pre.innerHTML:', pre.innerHTML.slice(0, 200))
+      logger.debug('[processCodeBlocks] linesContainer:', linesContainer?.tagName, 'children:', linesContainer?.children.length)
+
       let newHtml: string
 
-      if (codeElements.length > 1) {
-        // 多个 code 标签 - 每个 code 是一行（微信代码块格式）
-        // 注意：这里故意不包装 <code>，因为内容已从多个 <code> 合并
+      if (linesContainer) {
+        // 多行容器：每个子元素是一行代码
         const lines: string[] = []
-        codeElements.forEach((code) => {
-          const text = code.textContent || ''
+        Array.from(linesContainer.children).forEach((child) => {
+          const text = child.textContent || ''
           lines.push(escapeHtml(text))
         })
         newHtml = lines.join('\n')
-      } else if (codeElements.length === 1) {
-        // 单个 code 标签 - 使用 innerText 获取文本（保留换行）
-        const code = codeElements[0] as HTMLElement
-        const text = code.innerText || code.textContent || ''
-        newHtml = `<code>${escapeHtml(text)}</code>`
       } else {
-        // 无 code 标签 - 使用 pre 的 innerText
+        // 普通格式：用 innerText 提取（保留换行）
+        // 注意：如果代码块未经 backupAndSimplifyCodeBlocks 预处理，
+        // 在 detached DOM 上 innerText 可能无法正确处理 <br> 等
         const text = pre.innerText || pre.textContent || ''
         newHtml = `<code>${escapeHtml(text)}</code>`
       }
@@ -382,6 +474,14 @@ function processCodeBlocks(container: HTMLElement): void {
       logger.error('processCodeBlocks error:', e)
     }
   })
+
+}
+
+/**
+ * 仅处理代码块（供 Reader 路径提前调用）
+ */
+export function preprocessCodeBlocks(container: HTMLElement): void {
+  processCodeBlocks(container)
 }
 
 /**
@@ -661,9 +761,12 @@ function escapeHtml(text: string): string {
 
 /**
  * @deprecated 使用 preprocessForPlatform 代替
+ *
+ * 注意：此函数是全局预处理，不使用平台特定配置。
+ * 如需使用平台配置（如知乎的 removeEmptyLines），应使用 preprocessForPlatform。
  */
 export function preprocessContentDOM(container: HTMLElement): void {
-  // 执行默认的全部预处理
+  // 执行默认的全部预处理（不包含平台特定处理）
   removeComments(container)
   removeElements(container, ['iframe', 'script', 'style', 'noscript'])
   removeElements(container, ['mpprofile', 'qqmusic', 'mpvoice', 'mpcps', 'mp-miniprogram', 'mp-common-product'])
@@ -683,4 +786,116 @@ export function preprocessContentString(html: string): string {
   tempDiv.innerHTML = html
   preprocessContentDOM(tempDiv)
   return tempDiv.innerHTML
+}
+
+// ============ 代码块 Backup/Restore (用于原始 DOM 处理) ============
+
+/**
+ * 元素备份信息
+ */
+export interface ElementBackup {
+  element: Element
+  originalHTML: string
+}
+
+/**
+ * 在原始 DOM 上简化代码块，返回备份以便恢复
+ * 必须在克隆之前调用，因为 innerText 只在真实 DOM 上正确工作
+ *
+ * 使用与 processCodeBlocks 相同的逻辑，确保一致性
+ *
+ * @param root 要处理的根元素（默认为 document.body）
+ */
+export function backupAndSimplifyCodeBlocks(root: Element = document.body): ElementBackup[] {
+  const backups: ElementBackup[] = []
+
+  // 行号元素选择器（用于临时隐藏）
+  const GUTTER_SELECTORS = [
+    '.gutter',
+    '.line-numbers-rows',
+    '.hljs-ln-numbers',
+    '.code-snippet__line-index',
+    'ul.code-snippet__line-index',
+    '[class*="line-number"]',
+    '[class*="lineNumber"]',
+  ].join(', ')
+
+  root.querySelectorAll('pre').forEach((pre) => {
+    try {
+      // 保存原始 HTML
+      const originalHTML = pre.innerHTML
+
+      // 临时隐藏行号元素（不删除，因为要恢复）
+      const gutterEls = pre.querySelectorAll(GUTTER_SELECTORS)
+      const gutterDisplays: string[] = []
+      gutterEls.forEach((el, i) => {
+        gutterDisplays[i] = (el as HTMLElement).style.display
+        ;(el as HTMLElement).style.display = 'none'
+      })
+
+      // 使用结构检测移除未知的行号元素（临时）
+      // 注意：这里不能调用 removeLineNumberSiblings 因为会修改 DOM
+      // 我们只是临时隐藏，所以跳过这步
+
+      // 查找代码行容器（与 processCodeBlocks 相同的逻辑）
+      const linesContainer = findCodeLinesContainer(pre)
+
+      let cleanedText: string
+
+      if (linesContainer) {
+        // 多行容器：每个子元素是一行代码
+        const lines: string[] = []
+        Array.from(linesContainer.children).forEach((child) => {
+          const text = child.textContent || ''
+          lines.push(text)
+        })
+        cleanedText = lines.join('\n')
+      } else {
+        // 普通格式：用 innerText 提取（在真实 DOM 上能正确处理 br 等）
+        const code = pre.querySelector('code')
+        const targetEl = (code || pre) as HTMLElement
+        cleanedText = targetEl.innerText || ''
+      }
+
+      // 恢复行号显示
+      gutterEls.forEach((el, i) => {
+        ;(el as HTMLElement).style.display = gutterDisplays[i]
+      })
+
+      // 清理首尾空白
+      cleanedText = cleanedText
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .replace(/^\n+/, '')
+        .replace(/\n+$/, '')
+
+      // 跳过空代码块
+      if (!cleanedText.trim()) return
+
+      logger.debug('[backupAndSimplifyCodeBlocks] original:', originalHTML.slice(0, 100))
+      logger.debug('[backupAndSimplifyCodeBlocks] cleaned text:', cleanedText.slice(0, 100))
+
+      backups.push({
+        element: pre,
+        originalHTML: originalHTML,
+      })
+
+      // 替换为纯文本，添加标记表示已处理
+      pre.innerHTML = `<code>${escapeHtml(cleanedText)}</code>`
+      pre.setAttribute('data-code-simplified', 'true')
+    } catch (e) {
+      logger.error('[backupAndSimplifyCodeBlocks] error:', e)
+    }
+  })
+
+  return backups
+}
+
+/**
+ * 恢复被简化的代码块
+ */
+export function restoreCodeBlocks(backups: ElementBackup[]): void {
+  backups.forEach(({ element, originalHTML }) => {
+    element.innerHTML = originalHTML
+  })
 }
