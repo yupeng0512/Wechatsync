@@ -10,5 +10,5 @@
   "repository": "https://github.com/wechatsync/Wechatsync",
   "license": "MIT",
   "keywords": ["sync", "article", "blog", "zhihu", "juejin", "csdn", "weibo", "content"],
-  "skills": "./skills/"
+  "skills": "../skills/"
 }
