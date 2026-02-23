@@ -279,20 +279,18 @@ export async function uploadImage(
   }
 }
 
+const MIME_TO_EXT: Record<string, string> = {
+  'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png',
+  'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp',
+  'image/svg+xml': 'svg',
+}
+
 /**
- * 根据 MIME 类型获取文件扩展名
+ * 根据响应 MIME 类型生成文件名，默认 png
  */
-function getExtensionFromMimeType(mimeType: string): string {
-  const mimeToExt: Record<string, string> = {
-    'image/jpeg': '.jpg',
-    'image/jpg': '.jpg',
-    'image/png': '.png',
-    'image/gif': '.gif',
-    'image/webp': '.webp',
-    'image/bmp': '.bmp',
-    'image/svg+xml': '.svg',
-  }
-  return mimeToExt[mimeType] || '.jpg'
+function generateImageFilename(mimeType: string): string {
+  const ext = MIME_TO_EXT[mimeType] || 'png'
+  return `image_${Date.now()}.${ext}`
 }
 
 const MAX_RETRY_ATTEMPTS = 10
@@ -382,32 +380,7 @@ async function doUploadImageByUrl(
     // 获取 MIME 类型
     const mimeType = blob.type || 'image/jpeg'
 
-    // 生成带正确扩展名的文件名
-    let filename = ''
-    try {
-      const url = new URL(imageUrl)
-      const pathParts = url.pathname.split('/')
-      const lastPart = pathParts[pathParts.length - 1]
-
-      // 检查是否有有效扩展名
-      if (lastPart && /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(lastPart)) {
-        filename = lastPart
-      } else {
-        // 检查查询参数中是否有格式信息 (如微信的 wx_fmt=png)
-        const wxFmt = url.searchParams.get('wx_fmt')
-        if (wxFmt) {
-          filename = `image_${Date.now()}.${wxFmt}`
-        }
-      }
-    } catch {
-      // URL 解析失败
-    }
-
-    // 如果还没有文件名，根据 MIME 类型生成
-    if (!filename) {
-      const ext = getExtensionFromMimeType(mimeType)
-      filename = `image_${Date.now()}${ext}`
-    }
+    const filename = generateImageFilename(mimeType)
 
     logger.debug(` Uploading image: ${filename}, type: ${mimeType}`)
 
