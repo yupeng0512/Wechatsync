@@ -51,7 +51,7 @@ class McpClient {
   private reconnectAttempts = 0
   private readonly minReconnectInterval = 1000 // 1 秒
   private readonly maxReconnectInterval = 30000 // 30 秒
-  private readonly maxReconnectAttempts = 100 // 最大尝试次数（约 30 分钟后停止）
+  private readonly maxReconnectAttempts = Infinity // 无限重试，直到成功连接
 
   // 分片上传管理
   private pendingUploads = new Map<string, PendingUpload>()
