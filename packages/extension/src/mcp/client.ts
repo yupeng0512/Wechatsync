@@ -51,7 +51,7 @@ class McpClient {
   private reconnectAttempts = 0
   private readonly minReconnectInterval = 1000 // 1 秒
   private readonly maxReconnectInterval = 30000 // 30 秒
-  private readonly maxReconnectAttempts = Infinity // 无限重试，直到成功连接
+  private readonly maxReconnectAttempts = Infinity // mcpEnabled=true 时永远重试
 
   // 分片上传管理
   private pendingUploads = new Map<string, PendingUpload>()
@@ -163,6 +163,17 @@ class McpClient {
       return
     }
 
+    // 只在 MCP 启用时重连，避免无意义的后台重试消耗资源
+    chrome.storage.local.get('mcpEnabled').then(storage => {
+      if (!storage.mcpEnabled) {
+        logger.debug('MCP disabled, skip reconnect')
+        return
+      }
+      this._doScheduleReconnect()
+    }).catch(() => this._doScheduleReconnect())
+  }
+
+  private _doScheduleReconnect(): void {
     // 指数退避：1s, 2s, 4s, 8s, 16s, 30s, 30s, ...
     const interval = Math.min(
       this.minReconnectInterval * Math.pow(2, this.reconnectAttempts),
@@ -483,7 +494,7 @@ export const mcpClient = new McpClient()
 
 // 启动连接（在 background 中调用）
 export function startMcpClient(): void {
-  mcpClient.connect()
+  mcpClient.resetReconnect()
 }
 
 // 停止连接
