@@ -190,8 +190,8 @@ export class EastmoneyAdapter extends CodeAdapter {
       { draftid: params.draftid ?? "" },
       { drafttype: "0" },
       { type: "0" },
-      { title: params.title },
-      { text: params.text },
+      { title: encodeURIComponent(params.title) },
+      { text: encodeURIComponent(params.text) },
       { columns: "2" },
       { cover: "" },
       { issimplevideo: "0" },
@@ -201,21 +201,25 @@ export class EastmoneyAdapter extends CodeAdapter {
       { tgProduct: "" },
       { spcolumns: "" },
       { textsource: "0" },
-      { replyauthority: "0" },
-      { modules: "[]" },
+      { replyauthority: "" },
+      { modules: encodeURIComponent("[]") },
     ];
   }
 
   /** 调用草稿 API */
-  private async callDraftApi(parm: object[]): Promise<DraftResult> {
+  private async callDraftApi(parm: object[], draftId?: string): Promise<DraftResult> {
+    const pageUrl = draftId
+      ? `https://mp.eastmoney.com/collect/pc_article/index.html#/?id=${draftId}`
+      : "https://mp.eastmoney.com/collect/pc_article/index.html#/";
+
     const body = JSON.stringify({
-      pageUrl: "https://mp.eastmoney.com/collect/pc_article/index.html#/",
+      pageUrl,
       path: "draft/api/Article/SaveDraft",
       parm: JSON.stringify(parm),
     });
 
     const response = await this.runtime.fetch(
-      "https://emfront.eastmoney.com/apifront/Tran/GetData?platform",
+      "https://emfront.eastmoney.com/apifront/Tran/GetData?platform=",
       {
         method: "POST",
         credentials: "include",
@@ -282,7 +286,7 @@ export class EastmoneyAdapter extends CodeAdapter {
       title,
       text: `<div class="xeditor_content cfh_web">${content}</div>`,
     });
-    await this.callDraftApi(parm);
+    await this.callDraftApi(parm, draftId);
   }
 
   /** URL 上传图片 */
