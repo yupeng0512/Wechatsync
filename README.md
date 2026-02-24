@@ -60,6 +60,42 @@
 
 - [提交新平台请求](https://airtable.com/shrLSJMnTC2BlmP29)
 
+## CLI 命令行工具
+
+最简单的使用方式，无需配置 MCP，安装即用：
+
+```bash
+npm install -g @wechatsync/cli
+```
+
+需要先安装 Chrome 扩展并在扩展设置中启用「MCP 连接」获取 Token，然后：
+
+```bash
+export WECHATSYNC_TOKEN="你的token"
+
+# 同步文章到多个平台
+wechatsync sync article.md -p zhihu,juejin,csdn
+
+# 查看平台登录状态
+wechatsync platforms --auth
+
+# 从浏览器当前页面提取文章
+wechatsync extract -o article.md
+```
+
+### Claude Code Skill 集成
+
+安装后可在 Claude Code 中直接用自然语言操作：
+
+```bash
+/plugin marketplace add wechatsync/Wechatsync
+/plugin install wechatsync
+```
+
+然后直接说"把这篇文章同步到掘金和知乎"即可。
+
+详细文档见 [packages/cli/README.md](packages/cli/README.md)
+
 ## Claude Code / Claude Desktop 集成 (Anthropic MCP)
 
 通过 Anthropic MCP 协议，可以在 Claude Code 或 Claude Desktop 中使用 AI 同步公众号文章到多个平台。
@@ -126,6 +162,7 @@ Wechatsync/
 ├── packages/
 │   ├── extension/     # Chrome 扩展 (MV3)
 │   ├── mcp-server/    # MCP Server (stdio/SSE)
+│   ├── cli/           # 命令行工具
 │   └── core/          # 核心逻辑 (共享)
 ```
 
