@@ -715,12 +715,12 @@ program
         console.log()
 
         if (result.isAuthenticated) {
-          console.log(chalk.green(`✓ ${result.name} 已登录`))
+          console.log(chalk.green(`✓ ${platform} 已登录`))
           if (result.username) {
             console.log(`  用户: ${chalk.cyan(result.username)}`)
           }
         } else {
-          console.log(chalk.red(`✗ ${result.name} 未登录`))
+          console.log(chalk.red(`✗ ${platform} 未登录`))
           if (result.error) {
             console.log(`  错误: ${chalk.gray(result.error)}`)
           }
