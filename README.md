@@ -25,7 +25,7 @@
 
 **推荐**: [Chrome 网上应用店](https://chrome.google.com/webstore/detail/%E5%BE%AE%E4%BF%A1%E5%90%8C%E6%AD%A5%E5%8A%A9%E6%89%8B/hchobocdmclopcbnibdnoafilagadion) (自动更新)
 
-**手动安装**: 下载 [最新 Release](https://wpics.oss-cn-shanghai.aliyuncs.com/wechatsync-2.0.3.zip?date=20260118) 解压后加载到 Chrome 扩展
+**手动安装**: 下载 [最新 Release](https://wpics.oss-cn-shanghai.aliyuncs.com/wechatsync-2.0.6.zip?date=20260225) 解压后加载到 Chrome 扩展
 
 
 ## 支持的平台
@@ -55,6 +55,7 @@
 | 搜狐焦点 | sohufocus | 房产 | ✅ |
 | 小红书 | xiaohongshu | 主流自媒体 | ✅ |
 | X (Twitter) | x | 海外 | ✅ |
+| 东方财富 | eastmoney | 财经 | ✅ |
 | WordPress | wordpress | 自建站 | ✅ |
 | Typecho | typecho | 自建站 | ✅ |
 
@@ -143,6 +144,22 @@ pnpm build
 ```
 
 然后在 Chrome 中加载 `packages/extension/dist` 目录。
+
+## 更新日志
+
+### v2.0.6 (2026-02-25)
+
+- 🆕 新增东方财富 (由@mayaohua贡献)
+- 🆕 新增悬浮同步按钮（设置中开启，默认关闭）
+- 🔧 修复 WordPress / Typecho 部分图片因扩展名错误导致上传失败
+
+### v2.0.5 (2025-02-05)
+
+- 📦 代码块提取兼容性提升（支持更多格式）
+- 🔧 修复 OSChina
+- 🆕 新增 Markdown 压缩包下载（适用于 Hexo 等博客同步）
+
+完整日志见 [更新日志页面](https://www.wechatsync.com/changelog)
 
 ## 贡献代码
 
